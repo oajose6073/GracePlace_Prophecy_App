@@ -3,13 +3,20 @@
 Prophetic words given in church meetings, tagged to the member who received
 them and published to a church-wide feed once a pastor approves them.
 
-This repository currently implements **Phase 2 — App core** from [SPEC.md](SPEC.md):
-the Supabase schema and row-level security, invite-only sign-in, the feed,
-member profiles, the review queue and the members list.
+This repository implements two phases from [SPEC.md](SPEC.md):
+
+- **Phase 2 — App core.** The Supabase schema and row-level security,
+  invite-only sign-in, the feed, member profiles, the review queue and the
+  members list.
+- **Phase 1 — Transcribe and split.** A local script that cuts a meeting
+  recording into one clip per word, transcribes each with the member names as
+  keyword hints, and publishes them as pending words. See §6. Written in
+  TypeScript rather than the Python the spec suggests, so it shares the
+  existing `lib/` types and Supabase client.
 
 Not built yet: the live operator console and the guest email flow (Phase 3),
-and the Python cutting/transcription worker (Phase 1 / Phase 4). The
-`guest_word` table exists so the schema is complete, but nothing writes to it.
+and moving the worker to Lambda (Phase 4). The `guest_word` table exists so
+the schema is complete, but nothing writes to it.
 
 ---
 
@@ -31,14 +38,18 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=<publishable key>
 SUPABASE_SECRET_KEY=<secret key — server only>
 SUPABASE_JWKS_URL=https://<project-ref>.supabase.co/auth/v1/.well-known/jwks.json
 
+# Needed only by the transcribe script (§6)
+OPENAI_API_KEY=<openai key — server only>
+
 # Optional, only for local testing with the seeded accounts
 ENABLE_DEV_LOGIN=true
 ```
 
-`SUPABASE_SECRET_KEY` is read only by `lib/supabase/admin.ts` and the two
-scripts in `scripts/`. Those files start with `import "server-only"`, so the
-build fails if a client component ever imports them, and the variable has no
+`SUPABASE_SECRET_KEY` is read only by `lib/supabase/admin.ts` and the scripts
+in `scripts/`. Those files start with `import "server-only"`, so the build
+fails if a client component ever imports them, and the variable has no
 `NEXT_PUBLIC_` prefix, so it is never inlined into the browser bundle.
+`OPENAI_API_KEY` is read only by `scripts/transcribe/` and never by the app.
 
 ---
 
@@ -59,17 +70,25 @@ There are two migrations, applied in filename order:
 
 3. [`20261004000300_soft_removal.sql`](supabase/migrations/20261004000300_soft_removal.sql)
    — `person.removed_at`, and the foreign-key changes that stop anything
-   deleting a word implicitly. See §7.1.
+   deleting a word implicitly. See §8.1.
 
 4. [`20261004000400_pending_visibility.sql`](supabase/migrations/20261004000400_pending_visibility.sql)
    — keeps pending words out of the feed, profiles and the audio bucket. See
-   §7.2.
+   §8.2.
 
 5. [`20261004000500_audio_mime_types.sql`](supabase/migrations/20261004000500_audio_mime_types.sql)
    — the `word-audio` bucket's accepted formats and its 100 MB limit.
 
 6. [`20261004000600_approval_requires_transcripts.sql`](supabase/migrations/20261004000600_approval_requires_transcripts.sql)
    — a word cannot be approved while any segment is missing its transcript.
+
+7. [`20261004000700_word_source.sql`](supabase/migrations/20261004000700_word_source.sql)
+   — `word.source`, so the transcribe script can tell its own pending words
+   apart from hand-made ones. See §6.
+
+8. [`20261004000800_segment_audio.sql`](supabase/migrations/20261004000800_segment_audio.sql)
+   — `segment.audio_clip_path`, so a word made of several segments has audio
+   for all of them and can be rebuilt later. See §6.
 
 None of them grants anything to `anon`; the second adds a default-privileges
 rule that keeps future tables that way too.
@@ -160,7 +179,131 @@ It matches on `@example.com` only, so real members are never touched.
 
 ---
 
-## 6. Testing each role
+## 6. Transcribing a meeting (Phase 1)
+
+The script takes a local recording plus a markers file, cuts one clip per
+marker, transcribes each clip, and publishes the results as pending words for
+the review queue.
+
+**The full recording is never uploaded.** Only the cut clips reach storage,
+and `uploadClip` refuses any path outside the run's own clips folder rather
+than trusting the caller.
+
+```bash
+# see what it would do, and read the transcripts, without touching anything
+npm run transcribe:dry -- --markers recordings/2026-05-08.markers.json
+
+# for real: creates the meeting, the words and the segments, uploads the clips
+npm run transcribe -- --markers recordings/2026-05-08.markers.json
+```
+
+Recordings live in `recordings/` and output in `transcribe-output/`. Both are
+gitignored.
+
+### The markers file
+
+Copy [`scripts/transcribe/example.markers.json`](scripts/transcribe/example.markers.json),
+which documents every field inline. The shape:
+
+```json
+{
+  "meeting": { "date": "2026-05-08", "format": "hybrid" },
+  "recording": "recordings/2026-05-08-meeting.m4a",
+  "markers": [
+    { "at": "00:01:12", "recipient": "Ruth", "giver": "Pastor Grace" },
+    { "at": "00:07:45", "recipient": "Eshter", "giver": "Pastor Sam" },
+    { "at": "00:11:02", "recipient": "Ruth", "addendum": true },
+    { "at": "00:14:20", "guest": true },
+    { "at": "00:17:05", "recipient": null },
+    { "at": "00:19:40", "end": true }
+  ]
+}
+```
+
+- `at` accepts `"HH:MM:SS.mmm"`, `"MM:SS"` or a plain number of seconds, and
+  must be strictly increasing.
+- A clip runs from one marker to the next, whatever kind the next one is — a
+  guest or `end` marker still acts as a boundary. The last marker runs to the
+  end of the recording unless an `end` marker closes it.
+- Names match against `person.name` **and** `name_spellings`,
+  case-insensitively, which is what makes `"Eshter"` resolve to Esther Nwosu.
+- `"recipient": null` is deliberate: it publishes as "to be confirmed". A name
+  that matches *nobody* is an error listing every unmatched name, plus the
+  current member list — except under `--dry-run`, where it is only a warning.
+- A name that matches two people is always an error; fix the spellings on the
+  Members page.
+- `"addendum": true` adds a further segment to that recipient's earlier word in
+  the same file, instead of creating a second word.
+- `"guest": true` is skipped with a warning. Guests are Phase 3.
+
+### Clips and transcription
+
+Clips are cut with the `ffmpeg-static` binary — no system ffmpeg needed — to
+mono AAC at 64 kbps in an `.m4a`, which is the spec's cost basis of about
+0.5 MB a minute and is on the bucket's MIME allow-list.
+
+Transcription uses **`gpt-transcribe`**, OpenAI's recommended transcription
+model, and passes every member name and spelling variant in its **`keywords`**
+parameter — a list of literal terms to bias towards. That is the right home
+for names; `prompt` is for unstructured context. Clips over 25 MB are rejected
+before the call, because the endpoint will not take them.
+
+### How a word's audio is put together
+
+Each **segment** keeps its own clip. What members play is
+`word.audio_clip_path`, derived from those:
+
+| Segments with audio | `word.audio_clip_path` |
+| --- | --- |
+| none | `null` |
+| one | that segment's clip, reused as-is — no duplicate object |
+| two or more | a joined clip: the segments in order, with a 0.6 s silence between each |
+
+`syncWordAudio` in [lib/word-audio.ts](lib/word-audio.ts) rebuilds this
+whenever the segment set changes, and deletes whatever is no longer
+referenced. Keeping the per-segment clips is what makes a later rebuild
+possible at all — by the time a reviewer removes a segment, the local files
+are long gone, so the clips are fetched back from the bucket.
+
+The script hands `syncWordAudio` the files it has just cut, so a fresh run
+joins from disk rather than downloading back what it has only just uploaded.
+
+This is also what fixes the addendum bug: before, an addendum's clip was never
+uploaded, so the transcript was there but the word's audio stopped at its
+first segment.
+
+### Re-running a meeting
+
+A second run against a meeting that already has pending words refuses, so
+nothing is silently duplicated. `--replace-pending` rebuilds the pending set:
+
+1. It prints every pending word it would delete and asks for `y/N`.
+2. `word.source` records whether the script or a person created each word, and
+   comparing `updated_at` with `created_at` on the word and its segments says
+   whether it was edited in review. If any pending word was **added by hand or
+   edited**, it refuses outright and names them — `--force` is needed as well
+   to discard that work.
+3. **Reviewed words are never selected**, so they cannot be caught up in it.
+
+```bash
+npm run transcribe -- --markers <file> --replace-pending
+npm run transcribe -- --markers <file> --replace-pending --force   # also discards hand edits
+```
+
+### The local copy
+
+`results.json` holds the **full text of every transcript**, so a stale output
+folder is a plain-text copy of people's prophetic words on a laptop. Every
+real run ends with a reminder that it exists.
+
+```bash
+npm run transcribe:clean                      # deletes output folders over 30 days old
+npm run transcribe:clean -- --days 7 --dry-run
+```
+
+---
+
+## 7. Testing each role
 
 The seed creates two editors, two pastors (admins) and three members. Sign in
 as each — different browsers or private windows are easiest, since sessions
@@ -239,7 +382,7 @@ again, and it works.
 
 ---
 
-## 7. How the permissions map to the spec
+## 8. How the permissions map to the spec
 
 The Roles and permissions table in [SPEC.md](SPEC.md) is the source of truth.
 One thing worth flagging, because your build request phrased it differently:
@@ -256,7 +399,7 @@ operator console". I followed the table — editors are a superset of admins:
 | Assign admin / editor roles | yes | no | no |
 | Read `guest_word` | yes | yes | **no** |
 
-### 7.1 Removing a member never removes a word
+### 8.1 Removing a member never removes a word
 
 A word is only ever deleted by an editor's explicit delete on that word.
 Nothing else deletes one as a side effect. Three things enforce that:
@@ -277,7 +420,7 @@ Nothing else deletes one as a side effect. Three things enforce that:
   Someone invited by mistake, with no words, can still just be deleted.
   `segment` → `word` stays `CASCADE` on purpose: a segment is part of a word.
 
-### 7.2 Pending words
+### 8.2 Pending words
 
 A word reaches members only after an admin approves it, and that holds in
 three places: the `word` row, its `segment` rows, and its audio object. A
@@ -310,7 +453,7 @@ editor role). Both raise from the database, not just the UI.
 
 ---
 
-## 8. How the pieces fit
+## 9. How the pieces fit
 
 ```
 app/
@@ -348,6 +491,13 @@ Two details that matter if you change things:
   Non-standard spellings a browser might report (`audio/mp3`, `audio/m4a`)
   are normalised client-side rather than widened in the bucket, so each
   format has exactly one name there.
+- **ffmpeg is shared between the app and the scripts, which constrains how
+  it is imported.** [lib/audio-join.ts](lib/audio-join.ts) carries
+  `import "server-only"` and is the only module the app touches.
+  [lib/ffmpeg.ts](lib/ffmpeg.ts) and [lib/word-audio.ts](lib/word-audio.ts)
+  behind it do not, because that marker *throws* under Node's default export
+  condition and the tsx scripts have to import them. They spawn a child
+  process, so a client bundle referencing them fails to build anyway.
 - **Approval rules live in three places on purpose.** `word_approval_guard`
   is the real gate; `approveWord` repeats the check so the reviewer gets a
   sentence instead of a Postgres error; the review page repeats it again to
@@ -360,7 +510,7 @@ Two details that matter if you change things:
 
 ---
 
-## 9. Known gaps
+## 10. Known gaps
 
 - `guest_word` has no UI and nothing purges rows past `expires_at`. Phase 3.
 - The feed fetches up to 500 words and sorts them in the app, because the sort
@@ -368,4 +518,11 @@ Two details that matter if you change things:
   revisit with a view or a denormalised date column if the archive grows.
 - A word's audio is one pre-cut clip per word, uploaded by hand. Cutting a
   full meeting recording at marker timestamps is the Phase 1 worker's job.
+- Re-joining runs ffmpeg inside a server action. That is fine locally, but
+  `ffmpeg-static` is a ~78 MB binary and may push a Vercel function over its
+  size limit. If it does, the join belongs in the Phase 4 worker; the shared
+  module is already separate from the app for that reason.
+- A reviewer-added segment is transcript-only — there is no clip to join in,
+  so the word's audio is left unchanged and the segment is labelled
+  "transcript only" in the review queue.
 - No tests. The role rules are the part most worth covering first.

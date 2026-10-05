@@ -4,6 +4,8 @@ import { createClient } from "@/lib/supabase/server";
 import { fetchWords } from "@/lib/words";
 import { canDelete } from "@/lib/types";
 
+import { ConfirmButton } from "@/components/confirm-button";
+
 import { AddWordForm } from "./add-word-form";
 import {
   addSegment,
@@ -11,6 +13,7 @@ import {
   createMeeting,
   createWord,
   deleteWord,
+  removeSegment,
   unapproveWord,
   updateWord,
 } from "./actions";
@@ -155,6 +158,9 @@ export default async function ReviewPage({
           const blankSegments = segments.filter(
             (s) => s.transcript.trim() === "",
           ).length;
+          const audioSegmentCount = segments.filter(
+            (s) => s.audio_clip_path,
+          ).length;
 
           const blockers: string[] = [];
           if (!word.recipient_id) blockers.push("assign a recipient");
@@ -197,7 +203,15 @@ export default async function ReviewPage({
               </header>
 
               {audioUrl ? (
-                <audio controls preload="none" src={audioUrl} />
+                <div>
+                  <audio controls preload="none" src={audioUrl} />
+                  {audioSegmentCount > 1 ? (
+                    <p className="mt-1 text-xs text-muted">
+                      One clip joined from {audioSegmentCount} segments, in order,
+                      with a short gap between each.
+                    </p>
+                  ) : null}
+                </div>
               ) : (
                 <p className="text-sm text-muted">
                   No audio attached — add it before approving.
@@ -256,6 +270,15 @@ export default async function ReviewPage({
                       <span className="text-xs font-medium text-muted">
                         Segment {index + 1}
                       </span>
+                      {segment.audio_clip_path ? (
+                        <span className="rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-900">
+                          has audio
+                        </span>
+                      ) : (
+                        <span className="rounded bg-stone-100 px-2 py-0.5 text-xs text-muted">
+                          transcript only
+                        </span>
+                      )}
                       <label className="text-xs text-muted">
                         Start (s)
                         <input
@@ -291,6 +314,21 @@ export default async function ReviewPage({
                           : "border-line"
                       }`}
                     />
+                    {editor ? (
+                      // The segment id is bound into the action rather than
+                      // sent as a form field. React overwrites the `name` and
+                      // `value` of any button whose formAction is a function —
+                      // it needs them to encode which action to run — so a
+                      // `name="segment_id"` here never reached the server.
+                      <ConfirmButton
+                        formAction={removeSegment.bind(null, segment.id)}
+                        formNoValidate
+                        message={`Remove segment ${index + 1}? Its audio and transcript will be deleted and can't be recovered.`}
+                        className="mt-2 rounded border border-red-300 px-2.5 py-1 text-xs text-red-700 transition hover:bg-red-50 disabled:opacity-40"
+                      >
+                        Remove segment
+                      </ConfirmButton>
+                    ) : null}
                   </div>
                 ))}
 
@@ -334,12 +372,12 @@ export default async function ReviewPage({
                 {editor ? (
                   <form action={deleteWord} className="ml-auto">
                     <input type="hidden" name="word_id" value={word.id} />
-                    <button
-                      type="submit"
-                      className="rounded-lg border border-red-300 px-3 py-2 text-sm text-red-700 transition hover:bg-red-50"
+                    <ConfirmButton
+                      message={`Delete the word for ${word.recipient?.name ?? "an unconfirmed recipient"}? Its audio and transcript will be deleted and can't be recovered.`}
+                      className="rounded-lg border border-red-300 px-3 py-2 text-sm text-red-700 transition hover:bg-red-50 disabled:opacity-40"
                     >
                       Delete
-                    </button>
+                    </ConfirmButton>
                   </form>
                 ) : (
                   <p className="ml-auto self-center text-xs text-muted">
@@ -395,12 +433,12 @@ async function ApprovedSection({
             {editor ? (
               <form action={deleteWord}>
                 <input type="hidden" name="word_id" value={word.id} />
-                <button
-                  type="submit"
-                  className="rounded border border-red-300 px-2.5 py-1 text-xs text-red-700 transition hover:bg-red-50"
+                <ConfirmButton
+                  message={`Delete the approved word for ${word.recipient?.name ?? "an unconfirmed recipient"}? It will disappear from the feed and their profile. Its audio and transcript will be deleted and can't be recovered.`}
+                  className="rounded border border-red-300 px-2.5 py-1 text-xs text-red-700 transition hover:bg-red-50 disabled:opacity-40"
                 >
                   Delete
-                </button>
+                </ConfirmButton>
               </form>
             ) : null}
           </li>

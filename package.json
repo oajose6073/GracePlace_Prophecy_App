@@ -10,12 +10,17 @@
     "typecheck": "tsc --noEmit",
     "seed": "tsx scripts/seed.ts",
     "seed:clean": "tsx scripts/clean.ts",
-    "db:push": "supabase db push"
+    "db:push": "supabase db push",
+    "transcribe": "tsx scripts/transcribe/index.ts",
+    "transcribe:dry": "tsx scripts/transcribe/index.ts --dry-run",
+    "transcribe:clean": "tsx scripts/transcribe/clean.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.7.0",
     "@supabase/supabase-js": "^2.58.0",
+    "ffmpeg-static": "^5.3.0",
     "next": "^15.5.4",
+    "openai": "^7.28.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "server-only": "^0.0.1"

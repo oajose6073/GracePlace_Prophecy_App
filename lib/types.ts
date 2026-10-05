@@ -2,6 +2,8 @@ export type PersonRole = "editor" | "admin" | "member";
 export type MeetingFormat = "zoom" | "in-person" | "hybrid";
 export type MeetingStatus = "scheduled" | "recorded" | "processing" | "complete";
 export type WordStatus = "pending" | "reviewed";
+/** Which path created a word. Used by the transcribe script's --replace-pending. */
+export type WordSource = "script" | "manual" | "seed";
 export type GuestSendStatus = "pending" | "sent" | "failed";
 
 export type Person = {
@@ -34,6 +36,7 @@ export type Word = {
   recipient_id: string | null;
   giver_id: string | null;
   status: WordStatus;
+  source: WordSource;
   audio_clip_path: string | null;
   approved_at: string | null;
   approved_by: string | null;
@@ -47,6 +50,8 @@ export type Segment = {
   start_sec: number;
   end_sec: number | null;
   transcript: string;
+  /** This segment's own clip. null for a segment typed in by a reviewer. */
+  audio_clip_path: string | null;
   position: number;
   created_at: string;
   updated_at: string;
@@ -100,6 +105,7 @@ export type Database = {
       meeting_format: MeetingFormat;
       meeting_status: MeetingStatus;
       word_status: WordStatus;
+      word_source: WordSource;
       guest_send_status: GuestSendStatus;
     };
     CompositeTypes: Record<string, never>;

@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { requireWriter } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 import type { PersonRole } from "@/lib/types";
+import { zeroRowReason } from "@/lib/write-guards";
 
 /**
  * The role rules live in the database (person_role_guard in the migration):
@@ -97,7 +98,13 @@ export async function updatePerson(formData: FormData) {
   if (error) back(error.message, "error");
 
   if (!data || data.length === 0) {
-    back("You do not have permission to change that person.", "error");
+    const reason = await zeroRowReason(supabase, "person", id);
+    back(
+      reason === "forbidden"
+        ? "You do not have permission to change that person. Only an editor can edit an existing editor or admin account."
+        : "That person is no longer on the member list. Reload the page.",
+      "error",
+    );
   }
 
   revalidatePath("/members");
@@ -132,8 +139,23 @@ export async function removePerson(formData: FormData) {
   if (error) back(error.message, "error");
 
   if (!data || data.length === 0) {
+    const reason = await zeroRowReason(supabase, "person", id);
+    if (reason === "missing") {
+      back("That person is no longer on the member list. Reload the page.", "error");
+    }
+
+    // The row is there, so either it is already removed (the `removed_at is
+    // null` filter matched nothing) or the policy refused the update.
+    const { data: existing } = await supabase
+      .from("person")
+      .select("removed_at")
+      .eq("id", id)
+      .maybeSingle();
+
     back(
-      "Nothing to remove — either they are already removed, or you do not have permission.",
+      existing?.removed_at
+        ? "They have already been removed from the member list."
+        : "You do not have permission to remove that person. Only an editor can remove an editor or admin.",
       "error",
     );
   }
@@ -162,7 +184,13 @@ export async function restorePerson(formData: FormData) {
   if (error) back(error.message, "error");
 
   if (!data || data.length === 0) {
-    back("You do not have permission to restore that person.", "error");
+    const reason = await zeroRowReason(supabase, "person", id);
+    back(
+      reason === "forbidden"
+        ? "You do not have permission to restore that person. Only an editor can restore an editor or admin."
+        : "That person is no longer on the member list, so there is nothing to restore.",
+      "error",
+    );
   }
 
   revalidatePath("/members");
