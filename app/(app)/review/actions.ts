@@ -5,7 +5,9 @@ import { redirect } from "next/navigation";
 
 import { requireWriter } from "@/lib/auth";
 import { AUDIO_BUCKET } from "@/lib/audio";
+import { syncWordAudio, wordAudioObjects } from "@/lib/audio-join";
 import { createClient } from "@/lib/supabase/server";
+import { zeroRowReason } from "@/lib/write-guards";
 
 /**
  * Every action here runs through the member's own session, so row-level
@@ -77,9 +79,18 @@ export async function createWord(formData: FormData) {
     transcript,
     start_sec: 0,
     position: 0,
+    // The clip belongs to the segment; the word's own audio is derived from
+    // its segments by syncWordAudio below.
+    audio_clip_path: audioPath,
   });
 
   if (segmentError) back(segmentError.message, "error");
+
+  try {
+    await syncWordAudio(supabase, word.id);
+  } catch (err) {
+    back(err instanceof Error ? err.message : "Could not set the word's audio.", "error");
+  }
 
   revalidatePath("/review");
   revalidatePath("/feed");
@@ -130,7 +141,14 @@ export async function updateWord(formData: FormData) {
   back("Changes saved.");
 }
 
-/** Adds a later addendum as a further segment on the same word (spec). */
+/**
+ * Adds a later addendum as a further segment on the same word (spec).
+ *
+ * A segment added here is transcript-only: there is no clip to go with it, so
+ * the word's audio is left exactly as it was. syncWordAudio is deliberately
+ * not called — it would download and re-encode every existing clip to produce
+ * the identical result.
+ */
 export async function addSegment(formData: FormData) {
   await requireWriter();
   const supabase = await createClient();
@@ -143,14 +161,90 @@ export async function addSegment(formData: FormData) {
     .select("id", { count: "exact", head: true })
     .eq("word_id", wordId);
 
-  const { error } = await supabase
-    .from("segment")
-    .insert({ word_id: wordId, position: count ?? 0, transcript: "", start_sec: 0 });
+  const { error } = await supabase.from("segment").insert({
+    word_id: wordId,
+    position: count ?? 0,
+    transcript: "",
+    start_sec: 0,
+    audio_clip_path: null,
+  });
 
   if (error) back(error.message, "error");
 
   revalidatePath("/review");
-  back("Segment added.");
+  back("Segment added. It has no audio of its own — type its transcript in.");
+}
+
+/**
+ * Removes a segment and rebuilds the word's audio from what is left.
+ *
+ * Deleting is editor-only, so RLS refuses this for an admin. The rebuild
+ * drops the removed segment's clip and the now-stale joined clip, so nothing
+ * is orphaned in the bucket.
+ */
+export async function removeSegment(segmentId: string, _formData: FormData) {
+  await requireWriter();
+  const supabase = await createClient();
+
+  if (!segmentId) back("Missing segment.", "error");
+
+  const { data: segment } = await supabase
+    .from("segment")
+    .select("id, word_id, audio_clip_path, word:word!segment_word_id_fkey ( status )")
+    .eq("id", segmentId)
+    .maybeSingle();
+
+  if (!segment) back("That segment no longer exists.", "error");
+
+  const status = (segment as unknown as { word: { status: string } | null }).word?.status;
+  if (status === "reviewed") {
+    back(
+      "That word is already published. Unapprove it before changing which segments it has.",
+      "error",
+    );
+  }
+
+  const removedPath = segment.audio_clip_path;
+
+  const { data: deleted, error } = await supabase
+    .from("segment")
+    .delete()
+    .eq("id", segmentId)
+    .select("id");
+
+  if (error) back(error.message, "error");
+  if (!deleted || deleted.length === 0) {
+    const reason = await zeroRowReason(supabase, "segment", segmentId);
+    back(
+      reason === "forbidden"
+        ? "Only an editor can remove a segment. Ask one of the editors."
+        : "That segment has already been removed. Reload the page to see the word as it is now.",
+      "error",
+    );
+  }
+
+  try {
+    const sync = await syncWordAudio(supabase, segment.word_id);
+
+    // sync clears the word's previous clip when it is no longer referenced,
+    // but the removed segment's own clip is its to tidy up.
+    if (
+      removedPath &&
+      removedPath !== sync.audioClipPath &&
+      !sync.removedObjects.includes(removedPath)
+    ) {
+      await supabase.storage.from(AUDIO_BUCKET).remove([removedPath]);
+    }
+  } catch (err) {
+    back(
+      `Segment removed, but rebuilding the audio failed: ${err instanceof Error ? err.message : err}`,
+      "error",
+    );
+  }
+
+  revalidatePath("/review");
+  revalidatePath("/feed");
+  back("Segment removed and the word's audio rebuilt.");
 }
 
 export async function approveWord(formData: FormData) {
@@ -241,11 +335,20 @@ export async function deleteWord(formData: FormData) {
   const wordId = String(formData.get("word_id") ?? "");
   if (!wordId) back("Missing word.", "error");
 
+  // Collected before the row goes: once the word is deleted its segments
+  // cascade away, and with them any record of which objects they owned.
+  const { data: segments } = await supabase
+    .from("segment")
+    .select("audio_clip_path")
+    .eq("word_id", wordId);
+
   const { data: word } = await supabase
     .from("word")
     .select("audio_clip_path")
     .eq("id", wordId)
     .maybeSingle();
+
+  const objects = wordAudioObjects(word?.audio_clip_path ?? null, segments ?? []);
 
   const { data: deleted, error } = await supabase
     .from("word")
@@ -256,13 +359,20 @@ export async function deleteWord(formData: FormData) {
   if (error) back(error.message, "error");
 
   if (!deleted || deleted.length === 0) {
-    back("Only an editor can delete a word. Ask one of the editors.", "error");
+    const reason = await zeroRowReason(supabase, "word", wordId);
+    back(
+      reason === "forbidden"
+        ? "Only an editor can delete a word. Ask one of the editors."
+        : "That word has already been deleted. Reload the page.",
+      "error",
+    );
   }
 
-  if (word?.audio_clip_path) {
-    // Storage delete is likewise editor-only; if it is refused the row is
-    // already gone and the orphaned object can be cleaned up separately.
-    await supabase.storage.from(AUDIO_BUCKET).remove([word.audio_clip_path]);
+  if (objects.length > 0) {
+    // Every clip the word owned: the joined one and each segment's. Storage
+    // delete is likewise editor-only; if it is refused the row is already
+    // gone and the objects can be cleaned up separately.
+    await supabase.storage.from(AUDIO_BUCKET).remove(objects);
   }
 
   revalidatePath("/review");
