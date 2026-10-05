@@ -2,7 +2,9 @@ import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
 
-export const AUDIO_BUCKET = "word-audio";
+// One definition, shared with the scripts and the join module.
+export { AUDIO_BUCKET } from "@/lib/word-audio";
+import { AUDIO_BUCKET } from "@/lib/word-audio";
 
 /**
  * Signed URLs expire, so a link copied out of the page stops working.

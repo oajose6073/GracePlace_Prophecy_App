@@ -50,6 +50,8 @@ export type Segment = {
   start_sec: number;
   end_sec: number | null;
   transcript: string;
+  /** This segment's own clip. null for a segment typed in by a reviewer. */
+  audio_clip_path: string | null;
   position: number;
   created_at: string;
   updated_at: string;

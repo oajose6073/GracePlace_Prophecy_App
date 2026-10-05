@@ -5,7 +5,7 @@ import type { Database } from "../lib/types";
 
 config({ path: ".env.local" });
 
-export const AUDIO_BUCKET = "word-audio";
+export { AUDIO_BUCKET } from "../lib/word-audio";
 export const SEED_DOMAIN = "example.com";
 
 export function admin(): SupabaseClient<Database> {

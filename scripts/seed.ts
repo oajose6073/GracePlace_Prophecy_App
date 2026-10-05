@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Seeds fake members and three sample words so every role can be tested.
  *
  * Person rows are created first, because the invite-only trigger refuses to
@@ -11,6 +11,7 @@
  */
 import { randomBytes } from "node:crypto";
 
+import { syncWordAudio } from "../lib/word-audio";
 import { admin, AUDIO_BUCKET, SEED_DOMAIN } from "./lib";
 import type { PersonRole } from "../lib/types";
 
@@ -118,9 +119,9 @@ function toneWav(seconds = 5, hz = 320, sampleRate = 22050): Buffer {
 async function main() {
   const db = admin();
 
-  console.log("Seeding GracePlace…\n");
+  console.log("Seeding GracePlaceâ€¦\n");
 
-  // 1. Member list first — this is the invitation.
+  // 1. Member list first â€” this is the invitation.
   const credentials: { email: string; role: PersonRole; password: string }[] = [];
 
   for (const p of PEOPLE) {
@@ -156,7 +157,7 @@ async function main() {
 
     if (error) {
       if (/already/i.test(error.message)) {
-        console.log(`  auth user ${p.email} already exists — leaving its password alone`);
+        console.log(`  auth user ${p.email} already exists â€” leaving its password alone`);
         continue;
       }
       throw new Error(`auth ${p.email}: ${error.message}`);
@@ -203,16 +204,21 @@ async function main() {
 
   if ((alreadySeeded ?? []).length > 0) {
     console.log(
-      `  ${alreadySeeded!.length} word(s) already on that meeting — skipping sample words`,
+      `  ${alreadySeeded!.length} word(s) already on that meeting â€” skipping sample words`,
     );
   } else {
     for (const [index, sample] of SAMPLE_WORDS.entries()) {
-      const path = `${meetingId}/sample-${index + 1}.wav`;
-
-      const { error: uploadError } = await db.storage
-        .from(AUDIO_BUCKET)
-        .upload(path, clip, { contentType: "audio/wav", upsert: true });
-      if (uploadError) throw new Error(`upload ${path}: ${uploadError.message}`);
+      // One clip per segment, like a real run. The first sample has two
+      // segments, so seeding also exercises the join.
+      const segmentPaths: string[] = [];
+      for (let s = 0; s < sample.segments.length; s += 1) {
+        const path = `${meetingId}/sample-${index + 1}-seg-${s + 1}.wav`;
+        const { error: uploadError } = await db.storage
+          .from(AUDIO_BUCKET)
+          .upload(path, clip, { contentType: "audio/wav", upsert: true });
+        if (uploadError) throw new Error(`upload ${path}: ${uploadError.message}`);
+        segmentPaths.push(path);
+      }
 
       // Always created pending, then approved separately, because
       // word_approval_guard requires the segments to exist and carry text
@@ -225,7 +231,8 @@ async function main() {
           recipient_id: byEmail.get(sample.recipient) ?? null,
           giver_id: byEmail.get(sample.giver) ?? null,
           status: "pending",
-          audio_clip_path: path,
+          // Derived from the segments by syncWordAudio below.
+          audio_clip_path: null,
           source: "seed",
         })
         .select("id")
@@ -236,11 +243,15 @@ async function main() {
       const segments = sample.segments.map((s, position) => ({
         word_id: word.id,
         position,
+        audio_clip_path: segmentPaths[position],
         ...s,
       }));
 
       const { error: segmentError } = await db.from("segment").insert(segments);
       if (segmentError) throw new Error(`segments ${index + 1}: ${segmentError.message}`);
+
+      // One segment -> the word points at that clip; more -> a joined clip.
+      await syncWordAudio(db, word.id, { meetingId });
 
       if (sample.status === "reviewed") {
         const { error: approveError } = await db
@@ -263,7 +274,7 @@ async function main() {
   // 5. Credentials, printed once.
   if (credentials.length > 0) {
     console.log("\n" + "=".repeat(68));
-    console.log("TEST PASSWORDS — shown once, not saved anywhere. Copy them now.");
+    console.log("TEST PASSWORDS â€” shown once, not saved anywhere. Copy them now.");
     console.log("Usable only with NODE_ENV=development and ENABLE_DEV_LOGIN=true.");
     console.log("=".repeat(68));
     for (const c of credentials) {
@@ -284,3 +295,4 @@ main().catch((err) => {
   console.error("\nSeed failed:", err instanceof Error ? err.message : err);
   process.exit(1);
 });
+

@@ -19,13 +19,14 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
-import { admin } from "../lib";
 import {
   CLIP_EXTENSION,
   assertUploadable,
   cutClip,
   probeDurationSeconds,
-} from "./audio";
+} from "../../lib/ffmpeg";
+import { syncWordAudio } from "../../lib/word-audio";
+import { admin } from "../lib";
 import { MarkersError, formatTime, loadMarkersFile, parseTime } from "./markers";
 import {
   describePerson,
@@ -333,6 +334,10 @@ async function main() {
   const results: ClipResult[] = [];
   /** Recipient id -> the word id created for them in this run, for addenda. */
   const wordByRecipient = new Map<string, string>();
+  /** Storage path -> the local file, so the join never re-downloads. */
+  const localClips = new Map<string, string>();
+  /** Words whose audio needs building once all their segments exist. */
+  const touchedWordIds = new Set<string>();
   let wordsCreated = 0;
   let addendaAttached = 0;
 
@@ -359,6 +364,20 @@ async function main() {
     const result: ClipResult = { marker, clipPath, durationSec, transcript };
 
     if (!args.dryRun) {
+      // Every clip is uploaded as its own segment's audio, addenda included.
+      // That is what was missing before: an addendum had a transcript but no
+      // sound, so a word's audio stopped at its first segment.
+      const objectName = `${randomUUID()}-${label}.${CLIP_EXTENSION}`;
+      const storagePath = await uploadClip(db, {
+        clipPath,
+        clipsDir,
+        meetingId,
+        objectName,
+      });
+      // Remembered so the join below reads the local file instead of
+      // downloading back what was just sent.
+      localClips.set(storagePath, clipPath);
+
       if (marker.addendum) {
         const target = marker.recipientId
           ? wordByRecipient.get(marker.recipientId)
@@ -370,30 +389,22 @@ async function main() {
           );
         }
 
-        // An addendum is a further segment on the same word, so its clip is
-        // not uploaded as a separate word's audio.
         await addSegment(db, {
           wordId: target,
           startSec: marker.startSec,
           endSec: marker.endSec,
           transcript,
+          audioClipPath: storagePath,
         });
         result.attachedToWordId = target;
+        result.storagePath = storagePath;
+        touchedWordIds.add(target);
         addendaAttached += 1;
       } else {
-        const objectName = `${randomUUID()}-${label}.${CLIP_EXTENSION}`;
-        const storagePath = await uploadClip(db, {
-          clipPath,
-          clipsDir,
-          meetingId,
-          objectName,
-        });
-
         const wordId = await createWord(db, {
           meetingId,
           recipientId: marker.recipientId,
           giverId: marker.giverId,
-          storagePath,
         });
 
         await addSegment(db, {
@@ -401,11 +412,13 @@ async function main() {
           startSec: marker.startSec,
           endSec: marker.endSec,
           transcript,
+          audioClipPath: storagePath,
         });
 
         if (marker.recipientId) wordByRecipient.set(marker.recipientId, wordId);
         result.wordId = wordId;
         result.storagePath = storagePath;
+        touchedWordIds.add(wordId);
         wordsCreated += 1;
       }
     } else if (!marker.addendum) {
@@ -417,6 +430,21 @@ async function main() {
     results.push(result);
     const words = transcript.split(/\s+/).filter(Boolean).length;
     console.log(`${words} words transcribed`);
+  }
+
+  // ---- build each word's playable audio -------------------------------------
+  // Deferred until now because a word's audio depends on how many segments it
+  // ends up with, and an addendum can arrive several markers later.
+  let joined = 0;
+  if (!args.dryRun && touchedWordIds.size > 0) {
+    console.log("");
+    for (const wordId of touchedWordIds) {
+      const sync = await syncWordAudio(db, wordId, { localClips, meetingId });
+      if (sync.strategy === "joined") {
+        joined += 1;
+        console.log(`  joined a multi-segment word into one clip`);
+      }
+    }
   }
 
   if (!args.dryRun) {
@@ -482,6 +510,9 @@ async function main() {
   console.log(`Mode               ${args.dryRun ? "dry run - nothing written" : "live"}`);
   console.log(`Words created      ${wordsCreated}`);
   console.log(`Addenda attached   ${addendaAttached}`);
+  if (!args.dryRun) {
+    console.log(`Multi-segment      ${joined} word${joined === 1 ? "" : "s"} joined into one clip`);
+  }
   console.log(`Guests skipped     ${guestsSkipped}`);
   console.log(`Clips              ${results.length}`);
   console.log(`Minutes            ${minutes.toFixed(1)}`);

@@ -4,6 +4,7 @@
  *
  * Only touches @example.com. Real members and their words are never matched.
  */
+import { wordAudioObjects } from "../lib/word-audio";
 import { admin, AUDIO_BUCKET, isSeedEmail, listAllAuthUsers, SEED_DOMAIN } from "./lib";
 
 async function main() {
@@ -25,14 +26,25 @@ async function main() {
     const idList = personIds.join(",");
     const { data: words, error: wordError } = await db
       .from("word")
-      .select("id, audio_clip_path")
+      .select("id, audio_clip_path, segment ( audio_clip_path )")
       .or(`recipient_id.in.(${idList}),giver_id.in.(${idList})`);
 
     if (wordError) throw new Error(wordError.message);
 
-    const paths = (words ?? [])
-      .map((w) => w.audio_clip_path)
-      .filter((p): p is string => Boolean(p));
+    type WordRow = {
+      id: string;
+      audio_clip_path: string | null;
+      segment: { audio_clip_path: string | null }[];
+    };
+
+    // A multi-segment word owns a joined clip plus one per segment.
+    const paths = [
+      ...new Set(
+        ((words ?? []) as unknown as WordRow[]).flatMap((w) =>
+          wordAudioObjects(w.audio_clip_path, w.segment ?? []),
+        ),
+      ),
+    ];
 
     if (paths.length > 0) {
       const { error } = await db.storage.from(AUDIO_BUCKET).remove(paths);

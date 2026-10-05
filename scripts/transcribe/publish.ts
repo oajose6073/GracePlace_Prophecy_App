@@ -5,8 +5,8 @@ import { resolve } from "node:path";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { Database } from "../../lib/types";
-import { AUDIO_BUCKET } from "../lib";
-import { CLIP_CONTENT_TYPE } from "./audio";
+import { CLIP_CONTENT_TYPE } from "../../lib/ffmpeg";
+import { AUDIO_BUCKET, wordAudioObjects } from "../../lib/word-audio";
 
 /**
  * created_at and updated_at are set from the same now() on insert, but allow
@@ -19,7 +19,8 @@ export type PendingWord = {
   recipientName: string;
   source: "script" | "manual" | "seed";
   edited: boolean;
-  audioClipPath: string | null;
+  /** The word's own clip plus every segment's, deduplicated. */
+  audioObjects: string[];
   segmentCount: number;
 };
 
@@ -58,7 +59,7 @@ export async function inspectMeeting(
     .select(
       `id, status, source, created_at, updated_at, audio_clip_path,
        recipient:person!word_recipient_id_fkey ( name ),
-       segment ( created_at, updated_at )`,
+       segment ( created_at, updated_at, audio_clip_path )`,
     )
     .eq("meeting_id", meetingId);
 
@@ -72,7 +73,11 @@ export async function inspectMeeting(
     updated_at: string;
     audio_clip_path: string | null;
     recipient: { name: string } | null;
-    segment: { created_at: string; updated_at: string }[];
+    segment: {
+      created_at: string;
+      updated_at: string;
+      audio_clip_path: string | null;
+    }[];
   };
 
   const rows = (data ?? []) as unknown as Row[];
@@ -92,7 +97,8 @@ export async function inspectMeeting(
         recipientName: r.recipient?.name ?? "(to be confirmed)",
         source: r.source,
         edited: wordEdited || segmentEdited,
-        audioClipPath: r.audio_clip_path,
+        // Every object the word owns, so replacing it leaves nothing behind.
+        audioObjects: wordAudioObjects(r.audio_clip_path, r.segment ?? []),
         segmentCount: (r.segment ?? []).length,
       };
     });
@@ -142,9 +148,9 @@ export async function deletePendingWords(
 ): Promise<{ wordsDeleted: number; objectsDeleted: number }> {
   if (pending.length === 0) return { wordsDeleted: 0, objectsDeleted: 0 };
 
-  const paths = pending
-    .map((w) => w.audioClipPath)
-    .filter((p): p is string => Boolean(p));
+  // Segment clips as well as the joined one — a multi-segment word owns
+  // several objects, and leaving any of them behind orphans them.
+  const paths = [...new Set(pending.flatMap((w) => w.audioObjects))];
 
   let objectsDeleted = 0;
   if (paths.length > 0) {
@@ -205,13 +211,16 @@ export async function uploadClip(
   return storagePath;
 }
 
+/**
+ * The word starts with no audio. syncWordAudio sets it once every segment
+ * exists, because what it points at depends on how many there turn out to be.
+ */
 export async function createWord(
   db: SupabaseClient<Database>,
   options: {
     meetingId: string;
     recipientId: string | null;
     giverId: string | null;
-    storagePath: string;
   },
 ): Promise<string> {
   const { data, error } = await db
@@ -220,7 +229,7 @@ export async function createWord(
       meeting_id: options.meetingId,
       recipient_id: options.recipientId,
       giver_id: options.giverId,
-      audio_clip_path: options.storagePath,
+      audio_clip_path: null,
       status: "pending",
       source: "script",
     })
@@ -238,6 +247,7 @@ export async function addSegment(
     startSec: number;
     endSec?: number;
     transcript: string;
+    audioClipPath: string | null;
   },
 ): Promise<void> {
   const { count } = await db
@@ -251,6 +261,7 @@ export async function addSegment(
     start_sec: options.startSec,
     end_sec: options.endSec ?? null,
     transcript: options.transcript,
+    audio_clip_path: options.audioClipPath,
   });
 
   if (error) throw new Error(`Adding a segment failed: ${error.message}`);
