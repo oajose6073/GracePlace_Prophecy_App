@@ -86,6 +86,10 @@ There are two migrations, applied in filename order:
    — `word.source`, so the transcribe script can tell its own pending words
    apart from hand-made ones. See §6.
 
+8. [`20261004000800_segment_audio.sql`](supabase/migrations/20261004000800_segment_audio.sql)
+   — `segment.audio_clip_path`, so a word made of several segments has audio
+   for all of them and can be rebuilt later. See §6.
+
 None of them grants anything to `anon`; the second adds a default-privileges
 rule that keeps future tables that way too.
 
@@ -243,6 +247,30 @@ model, and passes every member name and spelling variant in its **`keywords`**
 parameter — a list of literal terms to bias towards. That is the right home
 for names; `prompt` is for unstructured context. Clips over 25 MB are rejected
 before the call, because the endpoint will not take them.
+
+### How a word's audio is put together
+
+Each **segment** keeps its own clip. What members play is
+`word.audio_clip_path`, derived from those:
+
+| Segments with audio | `word.audio_clip_path` |
+| --- | --- |
+| none | `null` |
+| one | that segment's clip, reused as-is — no duplicate object |
+| two or more | a joined clip: the segments in order, with a 0.6 s silence between each |
+
+`syncWordAudio` in [lib/word-audio.ts](lib/word-audio.ts) rebuilds this
+whenever the segment set changes, and deletes whatever is no longer
+referenced. Keeping the per-segment clips is what makes a later rebuild
+possible at all — by the time a reviewer removes a segment, the local files
+are long gone, so the clips are fetched back from the bucket.
+
+The script hands `syncWordAudio` the files it has just cut, so a fresh run
+joins from disk rather than downloading back what it has only just uploaded.
+
+This is also what fixes the addendum bug: before, an addendum's clip was never
+uploaded, so the transcript was there but the word's audio stopped at its
+first segment.
 
 ### Re-running a meeting
 
@@ -463,6 +491,13 @@ Two details that matter if you change things:
   Non-standard spellings a browser might report (`audio/mp3`, `audio/m4a`)
   are normalised client-side rather than widened in the bucket, so each
   format has exactly one name there.
+- **ffmpeg is shared between the app and the scripts, which constrains how
+  it is imported.** [lib/audio-join.ts](lib/audio-join.ts) carries
+  `import "server-only"` and is the only module the app touches.
+  [lib/ffmpeg.ts](lib/ffmpeg.ts) and [lib/word-audio.ts](lib/word-audio.ts)
+  behind it do not, because that marker *throws* under Node's default export
+  condition and the tsx scripts have to import them. They spawn a child
+  process, so a client bundle referencing them fails to build anyway.
 - **Approval rules live in three places on purpose.** `word_approval_guard`
   is the real gate; `approveWord` repeats the check so the reviewer gets a
   sentence instead of a Postgres error; the review page repeats it again to
@@ -483,4 +518,11 @@ Two details that matter if you change things:
   revisit with a view or a denormalised date column if the archive grows.
 - A word's audio is one pre-cut clip per word, uploaded by hand. Cutting a
   full meeting recording at marker timestamps is the Phase 1 worker's job.
+- Re-joining runs ffmpeg inside a server action. That is fine locally, but
+  `ffmpeg-static` is a ~78 MB binary and may push a Vercel function over its
+  size limit. If it does, the join belongs in the Phase 4 worker; the shared
+  module is already separate from the app for that reason.
+- A reviewer-added segment is transcript-only — there is no clip to join in,
+  so the word's audio is left unchanged and the segment is labelled
+  "transcript only" in the review queue.
 - No tests. The role rules are the part most worth covering first.
