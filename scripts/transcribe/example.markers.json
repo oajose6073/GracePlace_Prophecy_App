@@ -1,0 +1,77 @@
+{
+  "_comment": [
+    "Example markers file. Copy it next to a recording, then run:",
+    "  npm run transcribe:dry -- --markers recordings/2026-05-08.markers.json",
+    "",
+    "meeting.date     YYYY-MM-DD. One meeting per date; re-running reuses it.",
+    "meeting.format   zoom | in-person | hybrid",
+    "recording        resolved against the working directory, then against",
+    "                 this file's own folder. Never uploaded - only the clips are.",
+    "",
+    "Each marker:",
+    "  at          \"HH:MM:SS.mmm\", \"MM:SS\", or a number of seconds.",
+    "              Must be strictly increasing. A clip runs from one marker to",
+    "              the next, whatever kind the next one is.",
+    "  recipient   a name or a known spelling variant, matched case-insensitively.",
+    "              null means \"to be confirmed\" and publishes with no recipient.",
+    "              A name that matches nobody is an error outside --dry-run.",
+    "  giver       same matching. null or omitted means \"not recorded\".",
+    "  addendum    true attaches a further segment to that recipient's earlier",
+    "              word in this same file, instead of creating a new word.",
+    "  guest       true skips the marker with a warning. Guests are Phase 3.",
+    "  end         true marks where the last word stops. Must be the final",
+    "              marker and carries nothing else. Omit it to run to the end",
+    "              of the recording.",
+    "  note        free text for whoever reviews it. Not published.",
+    "",
+    "Keys starting with _ are ignored."
+  ],
+
+  "meeting": {
+    "date": "2026-05-08",
+    "format": "hybrid"
+  },
+
+  "recording": "recordings/2026-05-08-meeting.m4a",
+
+  "markers": [
+    {
+      "at": "00:01:12",
+      "recipient": "Ruth",
+      "giver": "Pastor Grace"
+    },
+    {
+      "at": "00:04:30",
+      "recipient": "Daniel Osei",
+      "giver": "Pastor Grace"
+    },
+    {
+      "at": "00:07:45",
+      "recipient": "Eshter",
+      "giver": "Pastor Sam",
+      "note": "Operator tapped late - drag the start back about 5s in review."
+    },
+    {
+      "at": "00:11:02",
+      "recipient": "Ruth",
+      "giver": "Pastor Sam",
+      "addendum": true,
+      "note": "Follow-on to Ruth's word at 00:01:12."
+    },
+    {
+      "at": "00:14:20",
+      "guest": true,
+      "note": "Visitor - handle by hand until the guest flow ships."
+    },
+    {
+      "at": "00:17:05",
+      "recipient": null,
+      "giver": "Pastor Grace",
+      "note": "Name unclear on the recording - confirm in review."
+    },
+    {
+      "at": "00:19:40",
+      "end": true
+    }
+  ]
+}
