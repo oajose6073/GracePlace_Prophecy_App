@@ -2,6 +2,8 @@ export type PersonRole = "editor" | "admin" | "member";
 export type MeetingFormat = "zoom" | "in-person" | "hybrid";
 export type MeetingStatus = "scheduled" | "recorded" | "processing" | "complete";
 export type WordStatus = "pending" | "reviewed";
+/** Which path created a word. Used by the transcribe script's --replace-pending. */
+export type WordSource = "script" | "manual" | "seed";
 export type GuestSendStatus = "pending" | "sent" | "failed";
 
 export type Person = {
@@ -34,6 +36,7 @@ export type Word = {
   recipient_id: string | null;
   giver_id: string | null;
   status: WordStatus;
+  source: WordSource;
   audio_clip_path: string | null;
   approved_at: string | null;
   approved_by: string | null;
@@ -100,6 +103,7 @@ export type Database = {
       meeting_format: MeetingFormat;
       meeting_status: MeetingStatus;
       word_status: WordStatus;
+      word_source: WordSource;
       guest_send_status: GuestSendStatus;
     };
     CompositeTypes: Record<string, never>;

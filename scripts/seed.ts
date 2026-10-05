@@ -226,6 +226,7 @@ async function main() {
           giver_id: byEmail.get(sample.giver) ?? null,
           status: "pending",
           audio_clip_path: path,
+          source: "seed",
         })
         .select("id")
         .single();

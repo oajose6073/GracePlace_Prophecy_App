@@ -63,6 +63,9 @@ export async function createWord(formData: FormData) {
       giver_id: optionalId(formData.get("giver_id")),
       audio_clip_path: audioPath,
       status: "pending",
+      // Explicit, though it is also the column default: this is the
+      // hand-made path that --replace-pending refuses to discard.
+      source: "manual",
     })
     .select("id")
     .single();
