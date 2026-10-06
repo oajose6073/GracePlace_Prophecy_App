@@ -11,6 +11,45 @@
 export const CHURCH_NAME = "GracePlace Winnipeg";
 
 /**
+ * Where the meetings happen. Vercel's servers run in UTC, and so does
+ * `toISOString()` everywhere, so any "today" or clock time computed without
+ * this is UTC's — which in Winnipeg is tomorrow from 7pm (CDT) or 6pm (CST),
+ * right when evening meetings start.
+ */
+export const CHURCH_TIME_ZONE = "America/Winnipeg";
+
+/** Today's date in Winnipeg, as YYYY-MM-DD. */
+export function todayInChurchTimeZone(now: Date = new Date()): string {
+  // en-CA formats as YYYY-MM-DD, which is exactly the shape a <input
+  // type="date"> and the meeting.date column both want.
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: CHURCH_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}
+
+/** "7:04 p.m." for a timestamp, on Winnipeg's clock rather than the server's. */
+export function formatTimeInChurchTimeZone(iso: string): string {
+  return new Date(iso).toLocaleTimeString("en-CA", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: CHURCH_TIME_ZONE,
+  });
+}
+
+/** "Oct 5, 2026" for a timestamp, on Winnipeg's calendar. */
+export function formatDateTimeStampInChurchTimeZone(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-CA", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    timeZone: CHURCH_TIME_ZONE,
+  });
+}
+
+/**
  * "5 October 2026" — for people, not machines.
  *
  * `date` is a plain YYYY-MM-DD from Postgres. Parsing it as UTC avoids the
