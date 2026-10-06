@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { requireWriter } from "@/lib/auth";
+import { formatDateTimeStampInChurchTimeZone } from "@/lib/church";
 import { createClient } from "@/lib/supabase/server";
 import {
   ROLE_LABELS,
@@ -18,11 +19,7 @@ const ALL_ROLES: PersonRole[] = ["member", "admin", "editor"];
 
 function formatWhen(iso: string | null): string {
   if (!iso) return "";
-  return new Date(iso).toLocaleDateString("en-CA", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  return formatDateTimeStampInChurchTimeZone(iso);
 }
 
 export default async function MembersPage({

@@ -17,7 +17,9 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { CLIP_CONTENT_TYPE, CLIP_EXTENSION, joinClips } from "./ffmpeg";
 import type { Database } from "./types";
 
-export const AUDIO_BUCKET = "word-audio";
+import { AUDIO_BUCKET } from "./storage";
+
+export { AUDIO_BUCKET };
 
 type Client = SupabaseClient<Database>;
 
