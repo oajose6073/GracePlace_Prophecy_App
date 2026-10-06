@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { DEV_LOGIN_ENABLED } from "@/lib/dev-login";
 import { EmailLinkForm, GoogleButton } from "./login-forms";
 
@@ -63,6 +65,10 @@ export default function LoginPage() {
 
       <p className="mt-8 text-center text-xs text-muted">
         Invite only. There is no public sign-up.
+        <span aria-hidden> · </span>
+        <Link href="/privacy" className="underline underline-offset-2 hover:text-ink">
+          Privacy
+        </Link>
       </p>
     </main>
   );

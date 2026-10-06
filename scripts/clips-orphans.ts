@@ -12,8 +12,14 @@
  *   npm run clips:orphans
  *   npm run clips:orphans -- --meeting <id>
  *   npm run clips:orphans -- --delete
+ *   npm run clips:orphans -- --prod --delete   (asks you to type the project ref)
  */
-import { admin, AUDIO_BUCKET } from "./lib";
+import {
+  admin,
+  AUDIO_BUCKET,
+  confirmProductionWrite,
+  printEnvironmentBanner,
+} from "./lib";
 
 const PAGE = 1000;
 
@@ -31,6 +37,8 @@ function parseArgs(argv: string[]) {
       case "--dry-run":
         args.del = false;
         break;
+      case "--prod":
+        break; // handled in ./lib before anything loads
       default:
         if (argv[i].startsWith("--")) throw new Error(`Unknown flag ${argv[i]}.`);
     }
@@ -67,6 +75,7 @@ async function listFolder(db: Client, prefix: string): Promise<string[]> {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const db = admin();
+  printEnvironmentBanner();
 
   // Every path the database considers live.
   const referenced = new Set<string>();
@@ -136,6 +145,8 @@ async function main() {
     console.log("\nListing only. Re-run with --delete to remove them.\n");
     return;
   }
+
+  await confirmProductionWrite(`delete ${orphans.length} orphaned audio object(s)`);
 
   const { error } = await db.storage.from(AUDIO_BUCKET).remove(orphans);
   if (error) throw new Error(`Deleting orphans failed: ${error.message}`);

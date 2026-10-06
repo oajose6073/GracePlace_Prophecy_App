@@ -12,7 +12,7 @@
 import { randomBytes } from "node:crypto";
 
 import { syncWordAudio } from "../lib/word-audio";
-import { admin, AUDIO_BUCKET, SEED_DOMAIN } from "./lib";
+import { admin, AUDIO_BUCKET, refuseProduction, SEED_DOMAIN } from "./lib";
 import type { PersonRole } from "../lib/types";
 
 type SeedPerson = {
@@ -117,6 +117,13 @@ function toneWav(seconds = 5, hz = 320, sampleRate = 22050): Buffer {
 }
 
 async function main() {
+  // Seeded accounts have known passwords and @example.com addresses. They have
+  // no business existing alongside real members, so this never runs there.
+  refuseProduction(
+    "seed",
+    "It creates fake members with printed passwords; production has real ones.",
+  );
+
   const db = admin();
 
   console.log("Seeding GracePlaceâ€¦\n");

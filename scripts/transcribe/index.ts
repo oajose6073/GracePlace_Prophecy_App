@@ -17,6 +17,8 @@
  *   --replace-pending    rebuild this meeting's pending words (asks first)
  *   --force              with --replace-pending, also discard hand-made work
  *   --yes                skip the y/N prompt (for non-interactive runs)
+ *   --prod               use .env.prod; asks you to type the
+ *                        project ref before the first write
  *   --out <dir>          output folder (default transcribe-output/)
  */
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -30,7 +32,7 @@ import {
   probeDurationSeconds,
 } from "../../lib/ffmpeg";
 import { syncWordAudio } from "../../lib/word-audio";
-import { admin } from "../lib";
+import { admin, confirmProductionWrite, PROD, printEnvironmentBanner } from "../lib";
 import { loadMarkersFromDatabase } from "./from-db";
 import { MarkersError, formatTime, loadMarkersFile, parseTime } from "./markers";
 import {
@@ -125,6 +127,8 @@ function parseArgs(argv: string[]) {
       case "-y":
         args.yes = true;
         break;
+      case "--prod":
+        break; // handled in ../lib before anything loads
       default:
         if (arg.startsWith("--")) {
           throw new UserError(`Unknown flag ${arg}.`);
@@ -284,6 +288,8 @@ function slug(name: string | null): string {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  // Before anything reads: --meeting loads markers from the database.
+  printEnvironmentBanner();
   const db = admin();
 
   const { file, recordingPath } = args.meeting
@@ -335,6 +341,12 @@ async function main() {
   created.meetingId = meetingId;
 
   if (!args.dryRun) {
+    // Before the first write of any kind. --yes does not skip this; it only
+    // answers the --replace-pending prompt below.
+    await confirmProductionWrite(
+      `transcribe ${markers.length} marker(s) and publish them as pending words in meeting ${file.meeting.date}${args.replacePending ? ", replacing its pending words" : ""}`,
+    );
+
     if (!meetingId) {
       const meeting = await findOrCreateMeeting(
         db,

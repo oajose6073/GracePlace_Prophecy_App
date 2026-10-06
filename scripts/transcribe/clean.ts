@@ -35,6 +35,11 @@ function parseArgs(argv: string[]) {
       case "--dry-run":
         args.dryRun = true;
         break;
+      case "--prod":
+        // Accepted so it can be passed uniformly, but it changes nothing:
+        // this only ever touches files on this machine, never a project.
+        console.log("(--prod has no effect here: transcribe:clean only touches local files.)");
+        break;
       default:
         if (argv[i].startsWith("--")) throw new Error(`Unknown flag ${argv[i]}.`);
     }
