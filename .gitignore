@@ -7,3 +7,5 @@ out/
 next-env.d.ts
 recordings/
 transcribe-output/
+.env.prod
+supabase/.temp/
