@@ -5,8 +5,10 @@ import { fetchWords } from "@/lib/words";
 import { canDelete } from "@/lib/types";
 
 import { ConfirmButton } from "@/components/confirm-button";
+import type { GuestWord } from "@/lib/types";
 
 import { AddWordForm } from "./add-word-form";
+import { GuestSection } from "./guest-section";
 import {
   addSegment,
   approveWord,
@@ -41,13 +43,29 @@ export default async function ReviewPage({
   const person = await requireWriter();
   const supabase = await createClient();
 
-  const [{ data: meetings }, { data: people }, pending] = await Promise.all([
-    supabase.from("meeting").select("id, date, format").order("date", { ascending: false }),
-    supabase.from("person").select("id, name, removed_at").order("name"),
-    fetchWords({ status: "pending" }),
-  ]);
+  const [{ data: meetings }, { data: people }, pending, { data: guestRows }] =
+    await Promise.all([
+      supabase.from("meeting").select("id, date, format").order("date", { ascending: false }),
+        supabase
+        .from("person")
+        .select("id, name, removed_at, is_congregation")
+        .order("name"),
+      fetchWords({ status: "pending" }),
+      // RLS keeps these to editors and admins; members get nothing.
+      supabase
+        .from("guest_word")
+        .select("*, meeting:meeting!guest_word_meeting_id_fkey ( date )")
+        .order("expires_at"),
+    ]);
 
-  const signed = await signAudioPaths(pending.map((w) => w.audio_clip_path));
+  const guests = (guestRows ?? []) as unknown as (GuestWord & {
+    meeting: { date: string } | null;
+  })[];
+
+  const signed = await signAudioPaths([
+    ...pending.map((w) => w.audio_clip_path),
+    ...guests.map((g) => g.audio_clip_path),
+  ]);
   const editor = canDelete(person.role);
 
   // A removed member can no longer receive a new word, but one already
@@ -60,6 +78,14 @@ export default async function ReviewPage({
   const activePeople = (people ?? [])
     .filter((p) => !p.removed_at)
     .map((p) => ({ id: p.id, name: p.name }));
+
+  // The whole church can receive a word but never gives one.
+  const givers = (people ?? [])
+    .filter((p) => !p.removed_at && !p.is_congregation)
+    .map((p) => ({ id: p.id, name: p.name }));
+  const giverOptions = (people ?? [])
+    .filter((p) => !p.is_congregation)
+    .map((p) => ({ id: p.id, label: p.removed_at ? `${p.name} (removed)` : p.name }));
   const today = new Date().toISOString().slice(0, 10);
 
   return (
@@ -130,6 +156,7 @@ export default async function ReviewPage({
       <AddWordForm
         meetings={meetings ?? []}
         people={activePeople}
+        givers={givers}
         createWord={createWord}
       />
 
@@ -252,7 +279,7 @@ export default async function ReviewPage({
                       className="w-full rounded-lg border border-line bg-white px-3 py-2 text-sm outline-none focus:border-brand"
                     >
                       <option value="">Not recorded</option>
-                      {allPeople.map((p) => (
+                      {giverOptions.map((p) => (
                         <option key={p.id} value={p.id}>
                           {p.label}
                         </option>
@@ -389,6 +416,8 @@ export default async function ReviewPage({
           );
         })}
       </section>
+
+      <GuestSection guests={guests} signedUrls={signed} editor={editor} />
 
       <ApprovedSection unapproveWord={unapproveWord} editor={editor} deleteWord={deleteWord} />
     </div>

@@ -18,7 +18,9 @@
     "  giver       same matching. null or omitted means \"not recorded\".",
     "  addendum    true attaches a further segment to that recipient's earlier",
     "              word in this same file, instead of creating a new word.",
-    "  guest       true skips the marker with a warning. Guests are Phase 3.",
+    "  guest       true makes this a guest word: emailed once, then deleted.",
+    "              Never published to members. Pair it with guestEmail.",
+    "  guestEmail  the guest's address, or null/absent to add it in review.",
     "  end         true marks where the last word stops. Must be the final",
     "              marker and carries nothing else. Omit it to run to the end",
     "              of the recording.",
@@ -61,7 +63,8 @@
     {
       "at": "00:14:20",
       "guest": true,
-      "note": "Visitor - handle by hand until the guest flow ships."
+      "guestEmail": "visitor@example.com",
+      "note": "Emailed once on approval, then deleted."
     },
     {
       "at": "00:17:05",

@@ -13,7 +13,9 @@
     "db:push": "supabase db push",
     "transcribe": "tsx scripts/transcribe/index.ts",
     "transcribe:dry": "tsx scripts/transcribe/index.ts --dry-run",
-    "transcribe:clean": "tsx scripts/transcribe/clean.ts"
+    "transcribe:clean": "tsx scripts/transcribe/clean.ts",
+    "guests:expire": "tsx scripts/guests-expire.ts",
+    "clips:orphans": "tsx scripts/clips-orphans.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.7.0",
@@ -23,6 +25,7 @@
     "openai": "^7.28.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "resend": "^6.32.0",
     "server-only": "^0.0.1"
   },
   "devDependencies": {

@@ -19,7 +19,7 @@ export type ZeroRowReason = "missing" | "forbidden";
 
 export async function zeroRowReason(
   supabase: SupabaseClient<Database>,
-  table: "word" | "segment" | "person" | "meeting",
+  table: "word" | "segment" | "person" | "meeting" | "marker" | "guest_word",
   id: string,
 ): Promise<ZeroRowReason> {
   const { data } = await supabase.from(table).select("id").eq("id", id).maybeSingle();

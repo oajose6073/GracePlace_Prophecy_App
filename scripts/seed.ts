@@ -178,6 +178,9 @@ async function main() {
     .from("meeting")
     .select("id")
     .eq("date", meetingDate)
+    // Several meetings may share a date; the seed reuses the first it made.
+    .order("created_at")
+    .limit(1)
     .maybeSingle();
 
   if (existingMeeting) {

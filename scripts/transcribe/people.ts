@@ -18,7 +18,7 @@ export async function loadPeople(
 ): Promise<NameIndex> {
   const { data, error } = await db
     .from("person")
-    .select("id, name, name_spellings, removed_at")
+    .select("id, name, name_spellings, removed_at, is_congregation")
     .order("name");
 
   if (error) throw new Error(`Could not load the member list: ${error.message}`);
@@ -68,6 +68,11 @@ export function transcriptionKeywords(index: NameIndex): string[] {
   const seen = new Set<string>();
 
   for (const person of index.people) {
+    // The whole-church recipient is matched by name in a markers file, but
+    // "GracePlace" is not a name anyone speaks aloud mid-word, so feeding it
+    // to the model as a keyword would only bias the transcript.
+    if (person.is_congregation) continue;
+
     for (const label of [person.name, ...person.name_spellings]) {
       const cleaned = label?.replace(/[<>\r\n]/g, " ").trim().replace(/\s+/g, " ");
       if (cleaned) seen.add(cleaned);

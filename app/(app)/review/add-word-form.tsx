@@ -31,10 +31,14 @@ function formatDate(date: string): string {
 export function AddWordForm({
   meetings,
   people,
+  givers,
   createWord,
 }: {
   meetings: Pick<Meeting, "id" | "date" | "format">[];
+  /** Possible recipients, including the whole church. */
   people: Pick<Person, "id" | "name">[];
+  /** Possible givers. The whole church never gives a word. */
+  givers: Pick<Person, "id" | "name">[];
   createWord: (formData: FormData) => Promise<void>;
 }) {
   const formRef = useRef<HTMLFormElement>(null);
@@ -182,7 +186,7 @@ export function AddWordForm({
             className="w-full rounded-lg border border-line bg-white px-3 py-2 text-sm outline-none focus:border-brand"
           >
             <option value="">Not recorded</option>
-            {people.map((p) => (
+            {givers.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
               </option>

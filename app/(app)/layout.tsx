@@ -31,6 +31,9 @@ export default async function AppLayout({
             </Link>
             {writer ? (
               <>
+                <Link href="/console" className="text-muted hover:text-ink">
+                  Console
+                </Link>
                 <Link href="/review" className="text-muted hover:text-ink">
                   Review queue
                 </Link>
