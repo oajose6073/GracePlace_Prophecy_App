@@ -11,12 +11,7 @@ import {
 import { createClient } from "@/lib/supabase/client";
 import type { Meeting, Person } from "@/lib/types";
 
-/**
- * Duplicated rather than imported from lib/word-audio: that module pulls in
- * lib/ffmpeg, which spawns a child process, so importing it from a client
- * component would break the build. The bucket name is just a string here.
- */
-const AUDIO_BUCKET = "word-audio";
+import { AUDIO_BUCKET } from "@/lib/storage";
 
 function formatDate(date: string): string {
   const [y, m, d] = date.split("-").map(Number);

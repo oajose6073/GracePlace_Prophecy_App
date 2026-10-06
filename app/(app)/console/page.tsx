@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { requireWriter } from "@/lib/auth";
+import { formatTimeInChurchTimeZone, todayInChurchTimeZone } from "@/lib/church";
 import { createClient } from "@/lib/supabase/server";
 import { sortRecipients, type Marker } from "@/lib/types";
 
@@ -31,10 +32,7 @@ function formatDate(date: string): string {
 /** Two meetings can share a date, so the start time is what tells them apart. */
 function formatStartedAt(iso: string | null): string {
   if (!iso) return "never started";
-  return new Date(iso).toLocaleTimeString("en-CA", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatTimeInChurchTimeZone(iso);
 }
 
 export default async function ConsolePage({
@@ -46,7 +44,9 @@ export default async function ConsolePage({
   await requireWriter();
   const supabase = await createClient();
 
-  const today = new Date().toISOString().slice(0, 10);
+  // Winnipeg's date, not UTC's: an evening meeting must not default to
+  // tomorrow.
+  const today = todayInChurchTimeZone();
 
   // Several meetings may share a date — a test run and the real one — so each
   // is identified by id, never by date.
