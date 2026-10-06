@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Phase 1 - cut a meeting recording into one clip per word, transcribe each
  * one with the member names as keyword hints, and either write the results to
  * a local folder (--dry-run) or publish them as pending words for review.
@@ -7,12 +7,16 @@
  *
  *   npm run transcribe:dry -- --markers recordings/2026-05-08.markers.json
  *   npm run transcribe     -- --markers recordings/2026-05-08.markers.json
+ *   npm run transcribe     -- --meeting <id> --recording recordings/2026-05-08.m4a
  *
  * Flags:
- *   --markers <path>     the markers file (required)
+ *   --markers <path>     a markers file
+ *   --meeting <id>       read the console's markers from the database instead
+ *   --recording <path>   the recording, required with --meeting
  *   --dry-run            no database or storage writes
  *   --replace-pending    rebuild this meeting's pending words (asks first)
  *   --force              with --replace-pending, also discard hand-made work
+ *   --yes                skip the y/N prompt (for non-interactive runs)
  *   --out <dir>          output folder (default transcribe-output/)
  */
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -27,6 +31,7 @@ import {
 } from "../../lib/ffmpeg";
 import { syncWordAudio } from "../../lib/word-audio";
 import { admin } from "../lib";
+import { loadMarkersFromDatabase } from "./from-db";
 import { MarkersError, formatTime, loadMarkersFile, parseTime } from "./markers";
 import {
   describePerson,
@@ -38,6 +43,7 @@ import {
 import {
   addSegment,
   confirm,
+  createGuestWord,
   createWord,
   deletePendingWords,
   describePendingWord,
@@ -59,12 +65,35 @@ const DEFAULT_OUT = "transcribe-output";
 
 class UserError extends Error {}
 
+/**
+ * What this run has actually written so far.
+ *
+ * A run that dies halfway leaves real rows and real objects behind, and the
+ * operator needs to know exactly what, so they can judge whether to re-run
+ * with --replace-pending or fix something first. Module scope so the failure
+ * handler at the bottom can read it after main() has thrown.
+ */
+const created = {
+  meetingId: "",
+  meetingWasCreated: false,
+  words: [] as string[],
+  addenda: [] as string[],
+  /** Only "marker N at mm:ss" - never a label, address or transcript. */
+  guestWords: [] as string[],
+  clips: [] as string[],
+  /** Counted, not named: a guest clip path is still about a guest. */
+  guestClips: 0,
+};
+
 function parseArgs(argv: string[]) {
   const args = {
     markers: "",
+    meeting: "",
+    recording: "",
     dryRun: false,
     replacePending: false,
     force: false,
+    yes: false,
     out: DEFAULT_OUT,
   };
 
@@ -73,6 +102,12 @@ function parseArgs(argv: string[]) {
     switch (arg) {
       case "--markers":
         args.markers = argv[++i] ?? "";
+        break;
+      case "--meeting":
+        args.meeting = argv[++i] ?? "";
+        break;
+      case "--recording":
+        args.recording = argv[++i] ?? "";
         break;
       case "--out":
         args.out = argv[++i] ?? DEFAULT_OUT;
@@ -86,6 +121,10 @@ function parseArgs(argv: string[]) {
       case "--force":
         args.force = true;
         break;
+      case "--yes":
+      case "-y":
+        args.yes = true;
+        break;
       default:
         if (arg.startsWith("--")) {
           throw new UserError(`Unknown flag ${arg}.`);
@@ -93,10 +132,24 @@ function parseArgs(argv: string[]) {
     }
   }
 
-  if (!args.markers) {
+  if (!args.markers && !args.meeting) {
     throw new UserError(
-      "Pass --markers <path>. Example:\n  npm run transcribe:dry -- --markers recordings/2026-05-08.markers.json",
+      "Pass either --markers <path> or --meeting <id> --recording <path>. Examples:\n" +
+        "  npm run transcribe:dry -- --markers recordings/2026-05-08.markers.json\n" +
+        "  npm run transcribe     -- --meeting <id> --recording recordings/2026-05-08.m4a",
     );
+  }
+  if (args.markers && args.meeting) {
+    throw new UserError("Pass --markers or --meeting, not both â€” they are two ways to say the same thing.");
+  }
+  if (args.meeting && !args.recording) {
+    throw new UserError("--meeting also needs --recording <path>: the markers are in the database, the audio is not.");
+  }
+  if (args.recording && !args.meeting) {
+    throw new UserError('--recording only applies with --meeting. A markers file names its own recording.');
+  }
+  if (args.yes && !args.replacePending) {
+    throw new UserError("--yes only means anything alongside --replace-pending.");
   }
   if (args.force && !args.replacePending) {
     throw new UserError("--force only means anything alongside --replace-pending.");
@@ -113,12 +166,11 @@ function resolveMarkers(
   raw: RawMarker[],
   index: NameIndex,
   dryRun: boolean,
-): { markers: ResolvedMarker[]; guestsSkipped: number; warnings: string[] } {
+): { markers: ResolvedMarker[]; warnings: string[] } {
   const unmatched = new Map<string, number[]>();
   const ambiguous: string[] = [];
   const warnings: string[] = [];
   const markers: ResolvedMarker[] = [];
-  let guestsSkipped = 0;
 
   const times = raw.map((m, i) => parseTime(m.at, `marker ${i + 1}`));
 
@@ -158,19 +210,22 @@ function resolveMarkers(
   raw.forEach((marker, i) => {
     if (marker.end) return;
 
-    if (marker.guest) {
-      guestsSkipped += 1;
+    const isGuest = Boolean(marker.guest);
+
+    if (isGuest && !marker.guestEmail?.trim()) {
       warnings.push(
-        `marker ${i + 1} at ${formatTime(times[i])}: guest word skipped. The guest flow is Phase 3.`,
+        `marker ${i + 1} at ${formatTime(times[i])}: guest word with no email yet${marker.guestLabel?.trim() ? ` (${marker.guestLabel.trim()})` : ""}. It will wait in the review queue until an admin adds one.`,
       );
-      return;
     }
 
-    const recipient = lookup(marker.recipient, i + 1, "recipient");
+    const recipient = isGuest
+      ? { id: null, name: null }
+      : lookup(marker.recipient, i + 1, "recipient");
     const giver = lookup(marker.giver, i + 1, "giver");
 
     markers.push({
       index: i + 1,
+      clientId: marker.clientId ?? null,
       startSec: times[i],
       // The boundary is the next marker of any kind, including a guest or an
       // end marker. The final marker runs to the end of the recording.
@@ -180,6 +235,10 @@ function resolveMarkers(
       giverId: giver.id,
       giverName: giver.name,
       addendum: Boolean(marker.addendum),
+      isGuest,
+      guestEmail: marker.guestEmail?.trim() || null,
+      guestLabel: marker.guestLabel?.trim() || null,
+      guestSentAt: marker.guestSentAt ?? null,
       note: marker.note,
     });
   });
@@ -209,7 +268,7 @@ function resolveMarkers(
     );
   }
 
-  return { markers, guestsSkipped, warnings };
+  return { markers, warnings };
 }
 
 function slug(name: string | null): string {
@@ -225,9 +284,16 @@ function slug(name: string | null): string {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const { file, recordingPath } = loadMarkersFile(args.markers);
+  const db = admin();
 
-  console.log(`\nMarkers:   ${args.markers}`);
+  const { file, recordingPath } = args.meeting
+    ? await loadMarkersFromDatabase(db, {
+        meetingId: args.meeting,
+        recording: args.recording,
+      })
+    : loadMarkersFile(args.markers);
+
+  console.log(`\nMarkers:   ${args.meeting ? `meeting ${args.meeting} (from the console)` : args.markers}`);
   console.log(`Recording: ${recordingPath}`);
   console.log(`Meeting:   ${file.meeting.date} (${file.meeting.format})`);
   console.log(`Mode:      ${args.dryRun ? "dry run - nothing is written" : "live"}\n`);
@@ -237,7 +303,6 @@ async function main() {
     console.warn("Could not read the recording's duration; continuing anyway.\n");
   }
 
-  const db = admin();
   const people = await loadPeople(db);
   if (people.people.length === 0) {
     throw new UserError(
@@ -245,11 +310,7 @@ async function main() {
     );
   }
 
-  const { markers, guestsSkipped, warnings } = resolveMarkers(
-    file.markers,
-    people,
-    args.dryRun,
-  );
+  const { markers, warnings } = resolveMarkers(file.markers, people, args.dryRun);
 
   if (recordingDuration !== null) {
     const past = markers.filter((m) => m.startSec >= recordingDuration);
@@ -264,21 +325,40 @@ async function main() {
   if (warnings.length > 0) console.log("");
 
   // ---- the meeting, and what is already in it --------------------------------
-  let meetingId = "";
+  //
+  // --meeting names the meeting outright, so there is nothing to resolve: the
+  // date lookup exists only for a markers file, which names a date rather than
+  // a meeting, and a date can belong to several meetings. Everything
+  // downstream â€” clip paths, the output folder, results.json â€” reads this one
+  // variable, so this is the only place a meeting is decided.
+  let meetingId = args.meeting;
+  created.meetingId = meetingId;
+
   if (!args.dryRun) {
-    const meeting = await findOrCreateMeeting(db, file.meeting.date, file.meeting.format);
-    meetingId = meeting.id;
-    console.log(
-      meeting.created
-        ? `Created meeting ${file.meeting.date}.`
-        : `Using existing meeting ${file.meeting.date}.`,
-    );
+    if (!meetingId) {
+      const meeting = await findOrCreateMeeting(
+        db,
+        file.meeting.date,
+        file.meeting.format,
+      );
+      meetingId = meeting.id;
+      created.meetingWasCreated = meeting.created;
+      console.log(
+        meeting.created
+          ? `Created meeting ${file.meeting.date}.`
+          : `Using existing meeting ${file.meeting.date}.`,
+      );
+    } else {
+      console.log(`Using meeting ${meetingId} (${file.meeting.date}).`);
+    }
+
+    created.meetingId = meetingId;
 
     const { pending, reviewedCount } = await inspectMeeting(db, meetingId);
 
     if (reviewedCount > 0) {
       console.log(
-        `  ${reviewedCount} reviewed word${reviewedCount === 1 ? "" : "s"} in this meeting — never touched by this script.`,
+        `  ${reviewedCount} reviewed word${reviewedCount === 1 ? "" : "s"} in this meeting â€” never touched by this script.`,
       );
     }
 
@@ -309,7 +389,12 @@ async function main() {
         );
       }
 
-      if (!(await confirm("\nDelete them and rebuild from the markers file?"))) {
+      // --yes exists for scripted re-runs, where there is no terminal to
+      // answer the prompt. It skips the confirmation only; --replace-pending
+      // still refuses hand-made or hand-edited words without --force.
+      if (args.yes) {
+        console.log("\n--yes: deleting them without asking.");
+      } else if (!(await confirm("\nDelete them and rebuild from the markers file?"))) {
         console.log("\nNothing was changed.");
         return;
       }
@@ -322,7 +407,12 @@ async function main() {
   }
 
   // ---- cut, transcribe, publish ---------------------------------------------
-  const outputDir = join(args.out, file.meeting.date);
+  // Keyed by meeting, not just date: two meetings on the same day would
+  // otherwise overwrite each other's clips and results.json.
+  const outputDir = join(
+    args.out,
+    meetingId ? `${file.meeting.date}-${meetingId.slice(0, 8)}` : file.meeting.date,
+  );
   const clipsDir = join(outputDir, "clips");
   mkdirSync(clipsDir, { recursive: true });
 
@@ -340,9 +430,29 @@ async function main() {
   const touchedWordIds = new Set<string>();
   let wordsCreated = 0;
   let addendaAttached = 0;
+  let guestWordsCreated = 0;
+  let guestsSkipped = 0;
 
   for (const marker of markers) {
-    const label = `${String(marker.index).padStart(2, "0")}-${slug(marker.recipientName)}`;
+    // That guest word has already been emailed, discarded or expired, and its
+    // content deleted. Transcribing the audio again would rebuild exactly what
+    // the guest was told had been thrown away.
+    if (marker.isGuest && marker.guestSentAt && !args.dryRun) {
+      console.log(
+        `  marker ${marker.index}: guest word already dealt with on ${marker.guestSentAt.slice(0, 10)} - skipped.`,
+      );
+      guestsSkipped += 1;
+      continue;
+    }
+
+    // A guest has no recipient, so slugging the (null) name produced "tbc",
+    // which read as an unconfirmed member. Name them as guests, with the
+    // operator's label when there is one.
+    const label = marker.isGuest
+      ? `${String(marker.index).padStart(2, "0")}-guest${
+          marker.guestLabel ? `-${slug(marker.guestLabel)}` : ""
+        }`
+      : `${String(marker.index).padStart(2, "0")}-${slug(marker.recipientName)}`;
     const clipPath = join(clipsDir, `${label}.${CLIP_EXTENSION}`);
     const span = marker.endSec
       ? `${formatTime(marker.startSec)}-${formatTime(marker.endSec)}`
@@ -377,8 +487,30 @@ async function main() {
       // Remembered so the join below reads the local file instead of
       // downloading back what was just sent.
       localClips.set(storagePath, clipPath);
+      if (marker.isGuest) created.guestClips += 1;
+      else created.clips.push(storagePath);
 
-      if (marker.addendum) {
+      if (marker.isGuest) {
+        // A guest word is never a `word` row and never visible to members:
+        // the storage policy only grants a clip to a member when it belongs
+        // to an approved word, and no word points at this one.
+        const guestWordId = await createGuestWord(db, {
+          meetingId,
+          guestEmail: marker.guestEmail,
+          guestLabel: marker.guestLabel,
+          transcript,
+          storagePath,
+          // Links the row back to the console tap, so collecting the address
+          // in the console updates this row too.
+          markerClientId: marker.clientId,
+        });
+        result.guestWordId = guestWordId;
+        result.storagePath = storagePath;
+        created.guestWords.push(
+          `marker ${marker.index} at ${formatTime(marker.startSec)}`,
+        );
+        guestWordsCreated += 1;
+      } else if (marker.addendum) {
         const target = marker.recipientId
           ? wordByRecipient.get(marker.recipientId)
           : undefined;
@@ -399,6 +531,7 @@ async function main() {
         result.attachedToWordId = target;
         result.storagePath = storagePath;
         touchedWordIds.add(target);
+        created.addenda.push(marker.recipientName ?? `marker ${marker.index}`);
         addendaAttached += 1;
       } else {
         const wordId = await createWord(db, {
@@ -419,8 +552,11 @@ async function main() {
         result.wordId = wordId;
         result.storagePath = storagePath;
         touchedWordIds.add(wordId);
+        created.words.push(marker.recipientName ?? `(to be confirmed) marker ${marker.index}`);
         wordsCreated += 1;
       }
+    } else if (marker.isGuest) {
+      guestWordsCreated += 1;
     } else if (!marker.addendum) {
       wordsCreated += 1;
     } else {
@@ -463,7 +599,7 @@ async function main() {
       {
         generatedAt: new Date().toISOString(),
         dryRun: args.dryRun,
-        meeting: { ...file.meeting, id: args.dryRun ? null : meetingId },
+        meeting: { ...file.meeting, id: meetingId || null },
         recording: recordingPath,
         model: TRANSCRIPTION_MODEL,
         keywordCount: keywords.length,
@@ -471,26 +607,39 @@ async function main() {
           clips: results.length,
           wordsCreated,
           addendaAttached,
-          guestsSkipped,
+          guestWordsCreated,
           minutesTranscribed: Number(minutes.toFixed(2)),
           estimatedCostUsd: Number(cost.toFixed(4)),
         },
         warnings,
-        clips: results.map((r) => ({
-          marker: r.marker.index,
-          recipient: r.marker.recipientName,
-          giver: r.marker.giverName,
-          startSec: r.marker.startSec,
-          endSec: r.marker.endSec ?? null,
-          durationSec: Number(r.durationSec.toFixed(3)),
-          addendum: r.marker.addendum,
-          note: r.marker.note ?? null,
-          transcript: r.transcript,
-          wordId: r.wordId ?? null,
-          attachedToWordId: r.attachedToWordId ?? null,
-          storagePath: r.storagePath ?? null,
-          localClip: args.dryRun ? r.clipPath : null,
-        })),
+        clips: results.map((r) =>
+          // A guest word is emailed once and then deleted, so results.json -
+          // which lives on a laptop for up to 30 days - records only that a
+          // guest word happened and when. No transcript, label, address or
+          // clip path.
+          r.marker.isGuest
+            ? {
+                marker: r.marker.index,
+                kind: "guest" as const,
+                startSec: r.marker.startSec,
+                redacted: "Guest content is not written to disk.",
+              }
+            : {
+                marker: r.marker.index,
+                recipient: r.marker.recipientName,
+                giver: r.marker.giverName,
+                startSec: r.marker.startSec,
+                endSec: r.marker.endSec ?? null,
+                durationSec: Number(r.durationSec.toFixed(3)),
+                addendum: r.marker.addendum,
+                note: r.marker.note ?? null,
+                transcript: r.transcript,
+                wordId: r.wordId ?? null,
+                attachedToWordId: r.attachedToWordId ?? null,
+                storagePath: r.storagePath ?? null,
+                localClip: args.dryRun ? r.clipPath : null,
+              },
+        ),
       },
       null,
       2,
@@ -513,7 +662,10 @@ async function main() {
   if (!args.dryRun) {
     console.log(`Multi-segment      ${joined} word${joined === 1 ? "" : "s"} joined into one clip`);
   }
-  console.log(`Guests skipped     ${guestsSkipped}`);
+  console.log(`Guest words        ${guestWordsCreated}`);
+  if (guestsSkipped > 0) {
+    console.log(`Guests skipped     ${guestsSkipped} already sent, discarded or expired`);
+  }
   console.log(`Clips              ${results.length}`);
   console.log(`Minutes            ${minutes.toFixed(1)}`);
   console.log(
@@ -526,10 +678,26 @@ async function main() {
     console.log("Nothing was written to the database or to storage.");
   } else {
     console.log(`\n${wordsCreated} pending word${wordsCreated === 1 ? "" : "s"} are waiting in the review queue.`);
+    if (guestWordsCreated > 0) {
+      console.log(
+        `${guestWordsCreated} guest word${guestWordsCreated === 1 ? "" : "s"} too â€” add any missing email, then approve to send. They are deleted after 7 days either way.`,
+      );
+    }
     console.log(
       `\nReminder: ${resultsPath} holds the full transcripts on this machine.\n` +
-        `It is gitignored, but it is still a local copy of what was said.\n` +
-        `Run npm run transcribe:clean to drop output folders older than 30 days.`,
+        `It is gitignored, but it is still a local copy of what was said.`,
+    );
+
+    // The recording is the one copy of guest audio the app never controls.
+    // Everything else about a guest is deleted on send; this is not, and
+    // nothing removes it but a person.
+    console.log(
+      `\nDelete the recording when you are done with it:\n` +
+        `  ${recordingPath}\n` +
+        `It holds every word spoken in the meeting, guests included, and the\n` +
+        `clips are now in the private bucket. \`npm run transcribe:clean\` sweeps\n` +
+        `recordings and output folders over 30 days old, but nothing deletes it\n` +
+        `sooner than that.`,
     );
   }
   console.log("");
@@ -542,5 +710,77 @@ main().catch((err) => {
   } else {
     console.error(`\nTranscribe failed: ${message}\n`);
   }
+
+  reportWhatWasCreated();
   process.exit(1);
 });
+
+/**
+ * A half-finished run is the confusing case: some words exist, some do not,
+ * and clips may be in the bucket with nothing pointing at them. Spell it out
+ * rather than leaving the operator to go digging.
+ */
+function reportWhatWasCreated() {
+  const total =
+    created.words.length + created.addenda.length + created.guestWords.length;
+
+  if (total === 0 && created.clips.length === 0) {
+    console.error("Nothing was written to the database or to storage.\n");
+    return;
+  }
+
+  console.error("Before failing, this run created:\n");
+
+  if (created.meetingWasCreated) {
+    console.error(`  meeting      ${created.meetingId} (new)`);
+  } else if (created.meetingId) {
+    console.error(`  meeting      ${created.meetingId} (already existed)`);
+  }
+
+  if (created.words.length > 0) {
+    console.error(
+      `  ${String(created.words.length).padStart(2)} word(s)   pending, source=script: ${created.words.join(", ")}`,
+    );
+  }
+  if (created.addenda.length > 0) {
+    console.error(
+      `  ${String(created.addenda.length).padStart(2)} addend(a) attached to: ${created.addenda.join(", ")}`,
+    );
+  }
+  if (created.guestWords.length > 0) {
+    console.error(
+      `  ${String(created.guestWords.length).padStart(2)} guest word(s): ${created.guestWords.join(", ")}`,
+    );
+    console.error(
+      "       (guest details are not printed - see the review queue)",
+    );
+  }
+  if (created.guestClips > 0) {
+    console.error(
+      `  ${String(created.guestClips).padStart(2)} guest clip(s) uploaded, paths withheld`,
+    );
+  }
+  if (created.clips.length > 0) {
+    console.error(`  ${String(created.clips.length).padStart(2)} clip(s) uploaded:`);
+    for (const path of created.clips) console.error(`       ${path}`);
+  }
+  if (created.guestClips > 0) {
+    console.error(
+      "\n  The local clips folder was kept so a re-run is cheap, and it contains\n" +
+        "  guest audio. Delete it once you no longer need the retry.",
+    );
+  }
+
+  const orphans = created.clips.length - (total > 0 ? total : 0);
+  if (orphans > 0) {
+    console.error(
+      `\n  ${orphans} clip(s) may have no row pointing at them. \`npm run clips:orphans\` lists those.`,
+    );
+  }
+
+  console.error(
+    "\nRe-run with --replace-pending to clear the pending words above and start over.\n" +
+      "Reviewed words are never touched. Guest words are replaced by marker, not duplicated.\n",
+  );
+}
+

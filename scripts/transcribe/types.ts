@@ -14,6 +14,8 @@ export type MarkersFile = {
 };
 
 export type RawMarker = {
+  /** The console marker this came from, when the source is the database. */
+  clientId?: string | null;
   /** "HH:MM:SS(.mmm)", "MM:SS", or a plain number of seconds. */
   at: string | number;
   /**
@@ -24,8 +26,14 @@ export type RawMarker = {
   giver?: string | null;
   /** Attaches a further segment to this recipient's earlier word. */
   addendum?: boolean;
-  /** Guest words are Phase 3; these are skipped with a warning. */
+  /** Guest words become guest_word rows, emailed once and then deleted. */
   guest?: boolean;
+  /** Only on a guest marker. Blank is fine - it is added in review. */
+  guestEmail?: string | null;
+  /** Only on a guest marker. How the operator remembered who it was. */
+  guestLabel?: string | null;
+  /** Set once that guest word was emailed, discarded or expired. */
+  guestSentAt?: string | null;
   /** Marks the end of the last word. Carries no recipient. */
   end?: boolean;
   /** Free-text note for the reviewer. Not published. */
@@ -35,6 +43,7 @@ export type RawMarker = {
 /** A marker after validation, with names resolved to person ids. */
 export type ResolvedMarker = {
   index: number;
+  clientId: string | null;
   startSec: number;
   /** Undefined for the final clip, which runs to the end of the recording. */
   endSec?: number;
@@ -43,6 +52,11 @@ export type ResolvedMarker = {
   giverId: string | null;
   giverName: string | null;
   addendum: boolean;
+  /** A guest word: emailed to the guest, never published to members. */
+  isGuest: boolean;
+  guestEmail: string | null;
+  guestLabel: string | null;
+  guestSentAt: string | null;
   note?: string;
 };
 
@@ -51,6 +65,7 @@ export type PersonRow = {
   name: string;
   name_spellings: string[];
   removed_at: string | null;
+  is_congregation: boolean;
 };
 
 export type ClipResult = {
@@ -62,6 +77,7 @@ export type ClipResult = {
   wordId?: string;
   storagePath?: string;
   attachedToWordId?: string;
+  guestWordId?: string;
 };
 
 export type RunSummary = {
@@ -69,7 +85,7 @@ export type RunSummary = {
   dryRun: boolean;
   wordsCreated: number;
   addendaAttached: number;
-  guestsSkipped: number;
+  guestWordsCreated: number;
   clips: number;
   minutesTranscribed: number;
   estimatedCostUsd: number;

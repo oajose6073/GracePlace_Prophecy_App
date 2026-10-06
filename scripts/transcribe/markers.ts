@@ -157,6 +157,19 @@ function validateShape(markers: RawMarker[]): void {
       if (marker.addendum) {
         problems.push(`${where}: a guest marker cannot also be an addendum.`);
       }
+      if (marker.recipient) {
+        problems.push(
+          `${where}: a guest marker has no recipient — guests are never on the member list.`,
+        );
+      }
+      if (
+        marker.guestEmail !== undefined &&
+        marker.guestEmail !== null &&
+        (typeof marker.guestEmail !== "string" ||
+          (marker.guestEmail.trim() !== "" && !marker.guestEmail.includes("@")))
+      ) {
+        problems.push(`${where}: "guestEmail" must be an email address, null, or absent.`);
+      }
       return;
     }
 
@@ -187,9 +200,10 @@ function validateShape(markers: RawMarker[]): void {
     }
   });
 
-  const words = markers.filter((m) => !m.end && !m.guest);
-  if (words.length === 0) {
-    problems.push("No word markers found — every marker is a guest or an end marker.");
+  // A meeting with only a guest word is legitimate, so the requirement is
+  // simply that something was tagged.
+  if (markers.filter((m) => !m.end).length === 0) {
+    problems.push("Nothing was tagged — every marker is an end marker.");
   }
 
   if (problems.length > 0) {

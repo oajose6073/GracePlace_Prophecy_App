@@ -24,18 +24,36 @@ export type PendingWord = {
   segmentCount: number;
 };
 
+/**
+ * A markers file names a date, not a meeting. Several meetings can share a
+ * date, so that is only enough when exactly one does: otherwise the run would
+ * have to guess which, and guessing wrong publishes words to the wrong
+ * meeting. In that case the caller is told to name the meeting outright.
+ */
 export async function findOrCreateMeeting(
   db: SupabaseClient<Database>,
   date: string,
   format: "zoom" | "in-person" | "hybrid",
 ): Promise<{ id: string; created: boolean }> {
-  const { data: existing, error } = await db
+  const { data: matches, error } = await db
     .from("meeting")
-    .select("id")
+    .select("id, status, created_at")
     .eq("date", date)
-    .maybeSingle();
+    .order("created_at");
 
   if (error) throw new Error(`Looking up the meeting failed: ${error.message}`);
+
+  if ((matches ?? []).length > 1) {
+    const list = matches!
+      .map((m) => `  --meeting ${m.id}   (${m.status}, created ${m.created_at.slice(0, 16).replace("T", " ")})`)
+      .join("\n");
+    throw new Error(
+      `${matches!.length} meetings share the date ${date}, so a markers file cannot say which one you mean.\n` +
+        `Re-run naming the meeting instead:\n${list}`,
+    );
+  }
+
+  const existing = matches?.[0];
   if (existing) return { id: existing.id, created: false };
 
   const { data, error: insertError } = await db
@@ -265,6 +283,82 @@ export async function addSegment(
   });
 
   if (error) throw new Error(`Adding a segment failed: ${error.message}`);
+}
+
+/**
+ * Guest words are not `word` rows: they are never published to members, are
+ * emailed once, and are deleted on send or after seven days (spec).
+ *
+ * Keyed on the console marker so a re-run replaces the right row rather than
+ * emailing the same guest twice.
+ */
+export async function createGuestWord(
+  db: SupabaseClient<Database>,
+  options: {
+    meetingId: string;
+    guestEmail: string | null;
+    guestLabel: string | null;
+    transcript: string;
+    storagePath: string;
+    markerClientId: string | null;
+  },
+): Promise<string> {
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  const row = {
+    meeting_id: options.meetingId,
+    // Null, not blank: "no address yet" is a real state, and the check
+    // constraint rejects anything that is neither null nor an address.
+    guest_email: options.guestEmail?.trim() || null,
+    guest_label: options.guestLabel?.trim() || null,
+    transcript: options.transcript,
+    audio_clip_path: options.storagePath,
+    send_status: "pending" as const,
+    expires_at: expiresAt,
+    marker_client_id: options.markerClientId,
+  };
+
+  // Looked up and then written, rather than upserted. ON CONFLICT would tie
+  // this to the exact shape of a unique index, which is what broke it once
+  // already; guest_word_marker_unique is still there to stop a marker ever
+  // owning two rows, and a re-run is single-operator so there is no race to
+  // lose. An unexpected duplicate surfaces as that constraint's error.
+  if (options.markerClientId) {
+    const { data: existing, error: lookupError } = await db
+      .from("guest_word")
+      .select("id, audio_clip_path")
+      .eq("meeting_id", options.meetingId)
+      .eq("marker_client_id", options.markerClientId)
+      .maybeSingle();
+
+    if (lookupError) {
+      throw new Error(`Looking up the guest word failed: ${lookupError.message}`);
+    }
+
+    if (existing) {
+      // Replacing the clip: the old object is about to be unreferenced.
+      if (existing.audio_clip_path && existing.audio_clip_path !== options.storagePath) {
+        await db.storage.from(AUDIO_BUCKET).remove([existing.audio_clip_path]);
+      }
+
+      const { error } = await db
+        .from("guest_word")
+        .update(row)
+        .eq("id", existing.id);
+
+      if (error) throw new Error(`Updating the guest word failed: ${error.message}`);
+      return existing.id;
+    }
+  }
+
+  const { data, error } = await db
+    .from("guest_word")
+    .insert(row)
+    .select("id")
+    .single();
+
+  if (error || !data) throw new Error(`Creating a guest word failed: ${error?.message}`);
+  return data.id;
 }
 
 export async function markMeetingRecorded(
