@@ -1,10 +1,11 @@
-export type PersonRole = "editor" | "admin" | "member";
+﻿export type PersonRole = "editor" | "admin" | "member";
 export type MeetingFormat = "zoom" | "in-person" | "hybrid";
 export type MeetingStatus = "scheduled" | "recorded" | "processing" | "complete";
 export type WordStatus = "pending" | "reviewed";
 /** Which path created a word. Used by the transcribe script's --replace-pending. */
 export type WordSource = "script" | "manual" | "seed";
 export type GuestSendStatus = "pending" | "sent" | "failed";
+export type MarkerKind = "word" | "addendum" | "guest" | "to_confirm" | "end";
 
 export type Person = {
   id: string;
@@ -16,6 +17,8 @@ export type Person = {
   /** Set when an editor removes them. The row is kept so their words keep
       their recipient and giver; access is revoked in the database. */
   removed_at: string | null;
+  /** The single row standing for the whole church. Never signs in. */
+  is_congregation: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -26,6 +29,8 @@ export type Meeting = {
   format: MeetingFormat;
   status: MeetingStatus;
   recording_path: string | null;
+  /** Set when the operator taps "Recording started"; marker times offset it. */
+  recording_started_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -60,11 +65,43 @@ export type Segment = {
 export type GuestWord = {
   id: string;
   meeting_id: string;
-  guest_email: string;
+  /** Null until somebody collects it. Nothing sends without one. */
+  guest_email: string | null;
+  /** "man in grey, front row" — who to chase for the address. */
+  guest_label: string | null;
   audio_clip_path: string | null;
   transcript: string;
   send_status: GuestSendStatus;
+  send_error: string | null;
+  last_attempt_at: string | null;
+  marker_client_id: string | null;
   expires_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Marker = {
+  id: string;
+  meeting_id: string;
+  /** Generated on the device, so retrying the offline queue cannot duplicate. */
+  client_id: string;
+  kind: MarkerKind;
+  /** Seconds from the meeting's recording_started_at. */
+  at_sec: number;
+  recipient_id: string | null;
+  giver_id: string | null;
+  guest_email: string | null;
+  guest_label: string | null;
+  /**
+   * Set once that guest word was emailed, discarded or expired. The address
+   * and label are cleared at the same time; this is kept so the transcribe
+   * script never rebuilds deleted guest content from the recording.
+   */
+  guest_sent_at: string | null;
+  note: string | null;
+  /** Settled for the operator rather than by them. */
+  auto_confirmed: boolean;
+  created_by: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -92,12 +129,17 @@ export type Database = {
       word: Table<Word>;
       segment: Table<Segment>;
       guest_word: Table<GuestWord>;
+      marker: Table<Marker>;
     };
     Views: Record<string, never>;
     Functions: {
       claim_membership: {
         Args: Record<string, never>;
         Returns: boolean;
+      };
+      settle_awaiting_markers: {
+        Args: { p_meeting_id: string };
+        Returns: number;
       };
     };
     Enums: {
@@ -107,6 +149,7 @@ export type Database = {
       word_status: WordStatus;
       word_source: WordSource;
       guest_send_status: GuestSendStatus;
+      marker_kind: MarkerKind;
     };
     CompositeTypes: Record<string, never>;
   };
@@ -128,9 +171,20 @@ export function canDelete(role: PersonRole | null | undefined): boolean {
   return role === "editor";
 }
 
+/** The console pins the congregation first, then everyone else by name. */
+export function sortRecipients<T extends { name: string; is_congregation: boolean }>(
+  people: T[],
+): T[] {
+  return [...people].sort((a, b) => {
+    if (a.is_congregation !== b.is_congregation) return a.is_congregation ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
 /** Only editors assign or change the admin and editor roles. */
 export function canAssignPrivilegedRoles(
   role: PersonRole | null | undefined,
 ): boolean {
   return role === "editor";
 }
+

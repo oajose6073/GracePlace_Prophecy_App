@@ -50,7 +50,9 @@ export default async function MembersPage({
     ? ALL_ROLES
     : ["member"];
 
-  const editorCount = active.filter((p) => p.role === "editor").length;
+  const editorCount = active.filter(
+    (p) => p.role === "editor" && !p.is_congregation,
+  ).length;
 
   return (
     <div className="space-y-6">
@@ -188,8 +190,14 @@ export default async function MembersPage({
             // An admin may not touch a row that is already an editor or admin.
             const lockedForAdmin =
               viewer.role === "admin" && p.role !== "member";
+            // The whole-church recipient has no role and never signs in. The
+            // database refuses to change or remove it; this just stops the
+            // page offering.
             const roleLocked =
-              isSelf || lockedForAdmin || !canAssignPrivilegedRoles(viewer.role);
+              isSelf ||
+              lockedForAdmin ||
+              p.is_congregation ||
+              !canAssignPrivilegedRoles(viewer.role);
 
             return (
               <form
@@ -219,6 +227,11 @@ export default async function MembersPage({
                   {isSelf ? (
                     <span className="rounded bg-brand-soft px-2 py-0.5 text-xs text-brand">
                       You
+                    </span>
+                  ) : null}
+                  {p.is_congregation ? (
+                    <span className="rounded bg-brand-soft px-2 py-0.5 text-xs text-brand">
+                      the whole church — pinned first in the console
                     </span>
                   ) : null}
                 </div>
@@ -272,11 +285,13 @@ export default async function MembersPage({
                 </div>
 
                 <p className="mt-2 text-xs text-muted">
-                  {isSelf
-                    ? "You cannot change your own role — ask another editor."
-                    : lockedForAdmin
-                      ? `Only an editor can change an existing ${p.role} account.`
-                      : null}
+                  {p.is_congregation
+                    ? "Words given to everyone are tagged to this row. It has no role, never signs in, and cannot be removed — but you can rename it."
+                    : isSelf
+                      ? "You cannot change your own role — ask another editor."
+                      : lockedForAdmin
+                        ? `Only an editor can change an existing ${p.role} account.`
+                        : null}
                 </p>
 
                 <div className="mt-3 flex gap-2">
@@ -287,7 +302,7 @@ export default async function MembersPage({
                   >
                     Save
                   </button>
-                  {!isSelf && !lockedForAdmin ? (
+                  {!isSelf && !lockedForAdmin && !p.is_congregation ? (
                     <button
                       type="submit"
                       formAction={removePerson}
