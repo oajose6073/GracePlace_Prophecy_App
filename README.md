@@ -510,9 +510,104 @@ Two details that matter if you change things:
 
 ---
 
-## 10. Known gaps
+## 10. Deploying to production
 
-- `guest_word` has no UI and nothing purges rows past `expires_at`. Phase 3.
+Production runs on Vercel at **https://words.graceplacewpg.ca**, against its
+own Supabase project. Two projects, never mixed:
+
+| | Supabase project | Local env file |
+| --- | --- | --- |
+| dev | `qiwztvumbmrecjlbhrvn` | `.env.local` |
+| production | `nlanzwavfsocxijjvigf` | `.env.prod` |
+
+Both refs are named in [lib/environments.ts](lib/environments.ts), and the
+scripts refuse to run if the env file and the `--prod` flag disagree about
+which project they are pointing at.
+
+### 10.1 One-time setup, in order
+
+1. **Push the migrations to the production project.**
+   ```bash
+   npx supabase link --project-ref nlanzwavfsocxijjvigf
+   npx supabase db push
+   npx supabase link --project-ref qiwztvumbmrecjlbhrvn   # back to dev
+   ```
+2. **Add the first editor by hand.** Sign-in is invite-only, so an empty
+   database lets nobody in — including you. In the production SQL editor:
+   ```sql
+   insert into person (name, email, role)
+   values ('Your Name', 'you@example.com', 'editor');
+   ```
+   Add a second editor the same way: the spec asks for two, and removing the
+   last one is refused.
+3. **Supabase Auth, production project.** Site URL
+   `https://words.graceplacewpg.ca`; redirect allow-list
+   `https://words.graceplacewpg.ca/auth/callback`. Enable the Google provider.
+4. **Google Cloud.** Add `https://nlanzwavfsocxijjvigf.supabase.co/auth/v1/callback`
+   as an authorised redirect URI on the OAuth client.
+5. **Resend.** Verify `graceplacewpg.ca` and set `RESEND_FROM` to an address on
+   it. Until then guest emails only reach the Resend account owner.
+6. **Vercel environment variables** — sections 1 and 2 of
+   [.env.example](.env.example), Production environment:
+
+   | Variable | Where it is used |
+   | --- | --- |
+   | `NEXT_PUBLIC_SUPABASE_URL` | browser + server |
+   | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | browser + server |
+   | `NEXT_PUBLIC_SITE_URL` = `https://words.graceplacewpg.ca` | sign-in links |
+   | `SUPABASE_SECRET_KEY` | server: sign-in allowlist, cron |
+   | `RESEND_API_KEY` | server: guest emails |
+   | `RESEND_FROM` | server: guest emails |
+   | `RESEND_REPLY_TO` | server: guest replies, and the `/privacy` contact |
+   | `CRON_SECRET` | server: guards the daily expiry |
+
+   **Not** needed on Vercel: `OPENAI_API_KEY` (only `scripts/transcribe/`
+   reads it), `ENABLE_DEV_LOGIN`, `FFMPEG_PATH`. `SUPABASE_JWKS_URL` is no
+   longer read by anything and can be dropped everywhere.
+
+### 10.2 What the deployment does on its own
+
+- **Guest expiry** runs daily at 10:00 UTC (5 a.m. in Winnipeg in summer)
+  via [vercel.json](vercel.json) → `/api/cron/guests-expire`. Vercel sends
+  `CRON_SECRET` as `Authorization: Bearer …`; anything else gets a 401, and an
+  unset secret makes the route refuse rather than run unguarded. On the Hobby
+  plan Vercel only promises "within the hour", so a guest word can outlive its
+  `expires_at` by up to about a day.
+- **ffmpeg** ships only with `/review`, the one route that joins audio
+  (`serverExternalPackages` + `outputFileTracingIncludes` in
+  [next.config.mjs](next.config.mjs)). That function is about **81 MB** of
+  Vercel's **250 MB** limit, 76 MB of which is the Linux ffmpeg binary.
+- **Dev login** is compiled out of every production build — the flag becomes a
+  literal `false` and neither env var is read at runtime — and is separately
+  refused whenever the app points at the production project.
+
+### 10.3 Running scripts against production
+
+```bash
+npm run transcribe -- --prod --meeting <id> --recording recordings/<file>
+npm run guests:expire -- --prod
+npm run clips:orphans -- --prod --delete
+```
+
+`--prod` loads `.env.prod`, prints a banner before the first read,
+and asks you to **type the project ref** before the first write. There is no
+flag to skip that, and with no terminal attached it refuses. `seed` and
+`seed:clean` refuse `--prod` outright. `transcribe:clean` accepts it but only
+ever touches local files.
+
+> **Why `.env.prod` and not `.env.production.local`:** Next.js loads
+> `.env.production.local` automatically for `next build` and `next start`, so
+> a local build would quietly run against production. It never loads
+> `.env.prod` — only the scripts read it, and only with `--prod` — so
+> `npm run build` and `npm run dev` on your machine always stay on dev. Keep it
+> that way: don't rename it to anything Next.js recognises.
+
+> `vercel env pull` writes to `.env.local` by default, which would point local
+> runs at production. The scripts notice and refuse; pull into `.env.prod`
+> instead: `vercel env pull .env.prod --environment=production`.
+
+## 11. Known gaps
+
 - The feed fetches up to 500 words and sorts them in the app, because the sort
   key lives on the joined `meeting` row. Fine at roughly 500 words a year;
   revisit with a view or a denormalised date column if the archive grows.
@@ -525,4 +620,15 @@ Two details that matter if you change things:
 - A reviewer-added segment is transcript-only — there is no clip to join in,
   so the word's audio is left unchanged and the segment is labelled
   "transcript only" in the review queue.
+- **`/privacy` makes a promise the code cannot keep on its own:** that the
+  full meeting recording is deleted once the words are reviewed, and within
+  30 days at the latest. The recording lives on the operator's machine.
+  `transcribe` prints a reminder after every run and `transcribe:clean` sweeps
+  anything older than 30 days — but only when someone runs it.
+- Resend keeps its own log of sent emails, guest emails included, under
+  Resend's retention rules. The app deletes everything it holds; it cannot
+  delete Resend's copy.
+- Supabase's project-wide upload limit is a ceiling over the bucket's 100 MB
+  setting. On the Free plan it cannot exceed 50 MB; on Pro, raise it to at least
+  100 MB under Storage > Settings, or uploads over the global limit fail.
 - No tests. The role rules are the part most worth covering first.

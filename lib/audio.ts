@@ -2,9 +2,10 @@ import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
 
-// One definition, shared with the scripts and the join module.
-export { AUDIO_BUCKET } from "@/lib/word-audio";
-import { AUDIO_BUCKET } from "@/lib/word-audio";
+// From lib/storage rather than lib/word-audio: the latter imports ffmpeg,
+// and the feed has no business carrying it just to name a bucket.
+export { AUDIO_BUCKET } from "@/lib/storage";
+import { AUDIO_BUCKET } from "@/lib/storage";
 
 /**
  * Signed URLs expire, so a link copied out of the page stops working.

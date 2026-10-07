@@ -1,8 +1,14 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 
-/** Paths reachable without a session. Everything else needs one. */
-const PUBLIC_PATHS = ["/login", "/not-invited", "/auth"];
+/**
+ * Paths reachable without a session. Everything else needs one.
+ *
+ *   /privacy   readable by anyone, including someone deciding whether to join
+ *   /api/cron  called by Vercel, which has no session; it checks CRON_SECRET
+ *              itself and refuses everything else
+ */
+const PUBLIC_PATHS = ["/login", "/not-invited", "/auth", "/privacy", "/api/cron"];
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });

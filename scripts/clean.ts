@@ -5,9 +5,23 @@
  * Only touches @example.com. Real members and their words are never matched.
  */
 import { wordAudioObjects } from "../lib/word-audio";
-import { admin, AUDIO_BUCKET, isSeedEmail, listAllAuthUsers, SEED_DOMAIN } from "./lib";
+import {
+  admin,
+  AUDIO_BUCKET,
+  isSeedEmail,
+  listAllAuthUsers,
+  refuseProduction,
+  SEED_DOMAIN,
+} from "./lib";
 
 async function main() {
+  // It deletes by email domain. Nothing seeded should ever be in production,
+  // and a bulk delete there is not something to make one keystroke away.
+  refuseProduction(
+    "seed:clean",
+    "It bulk-deletes members and words; production should never contain seed data.",
+  );
+
   const db = admin();
 
   console.log(`Removing seeded @${SEED_DOMAIN} data…\n`);

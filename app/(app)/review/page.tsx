@@ -1,4 +1,5 @@
 import { requireWriter } from "@/lib/auth";
+import { todayInChurchTimeZone } from "@/lib/church";
 import { signAudioPaths } from "@/lib/audio";
 import { createClient } from "@/lib/supabase/server";
 import { fetchWords } from "@/lib/words";
@@ -86,7 +87,7 @@ export default async function ReviewPage({
   const giverOptions = (people ?? [])
     .filter((p) => !p.is_congregation)
     .map((p) => ({ id: p.id, label: p.removed_at ? `${p.name} (removed)` : p.name }));
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayInChurchTimeZone();
 
   return (
     <div className="space-y-6">

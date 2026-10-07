@@ -10,11 +10,26 @@ export type MagicLinkState = {
   message: string;
 };
 
+/**
+ * Where the one-time link sends people back to.
+ *
+ * NEXT_PUBLIC_SITE_URL first, and on Vercel it should always be set. Deriving
+ * it from the request would follow whichever hostname happened to serve it —
+ * a preview URL, or the *.vercel.app alias — and Supabase only redirects to
+ * addresses on its allow-list, so the link would arrive broken. The headers
+ * are the fallback for local development, where it is fine to follow them.
+ */
 async function origin(): Promise<string> {
+  const configured = process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/+$/, "");
+  if (configured) return configured;
+
   const h = await headers();
-  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
-  const proto = h.get("x-forwarded-proto") ?? "http";
-  return process.env.NEXT_PUBLIC_SITE_URL ?? `${proto}://${host}`;
+  const host = h.get("x-forwarded-host") ?? h.get("host");
+  if (!host) {
+    throw new Error("Set NEXT_PUBLIC_SITE_URL: there is no Host header to build a sign-in link from.");
+  }
+  const proto = h.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
+  return `${proto}://${host}`;
 }
 
 /**
